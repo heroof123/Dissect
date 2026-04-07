@@ -4,3 +4,5 @@ src-tauri/target/
 fix*.cjs
 damaged_lines.txt
 *.bak
+_*.jsx
+*.docx
