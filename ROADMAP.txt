@@ -1,347 +1,373 @@
 ╔══════════════════════════════════════════════════════════════════════════╗
-║           DISSECT — GELİŞTİRME YOL HARİTASI  v3                       ║
-║           Binary Analysis · AI Reverse Engineering · Hex Patcher       ║
-║           Son güncelleme: 2026-04-07                                   ║
+║           DISSECT — YOL HARİTASI v4  (YENİ DÖNEM)                     ║
+║           Binary Analysis · AI RE · Advanced Tooling                   ║
+║           Başlangıç: 2026-04-07                                        ║
+║                                                                        ║
+║           ✅ FAZ 1-6 tamamlandı → COMPLETED_V1.txt                     ║
+║           🚀 FAZ 7-12 = Yeni hedefler                                  ║
 ╚══════════════════════════════════════════════════════════════════════════╝
 
-  Durum:  [ ] = yapılmadı   [~] = kısmen var
+  Durum:  [ ] = yapılmadı   [~] = kısmen   [x] = tamamlandı
 
-  Tamamlanan özellikler → FEATURES.md
-
-
-══════════════════════════════════════════════════════════════════════════
-  FAZ 1 — DİSASSEMBLY & KOD GEZGİNİ            Öncelik: ★★★★★
-══════════════════════════════════════════════════════════════════════════
-
-  Amaç: Entry point ötesinde tam binary navigasyonu
-
-  [x] 1.1  Tam disassembly görünümü
-           — EP dışında herhangi bir offset'e atlama
-           — Sonsuz scroll (yukarı/aşağı, lazy-load chunk'lar)
-           — Adres çubuğu: RVA/VA/dosya ofseti gir → atla
-           — Syntax renklendirme: CALL (mavi), JMP (turuncu), NOP (gri),
-             RET (kırmızı), veri referansları (yeşil)
-
-  [x] 1.2  Fonksiyon listesi paneli
-           — Rust tarafında CALL/RET talimatlarından fonksiyon sınırları çıkar
-           — Sol panelde fonksiyon adı + boyut + çağrı sayısı listesi
-           — Tıkla → disassembly o fonksiyona atla
-           — Import ismiyle eşleştirme (IAT cross-reference)
-
-  [x] 1.3  Temel blok grafiği (CFG)
-           — JMP/Jcc/CALL/RET'ten basic block ayrıştır
-           — React Flow veya D3.js ile interaktif grafik
-           — Blok tıkla → disassembly'de vurgula
-           — Otomatik layout (dagre/elk algoritması)
-
-  [x] 1.4  Cross-reference (XRef) tablosu
-           — Bir fonksiyona/string'e kimler referans veriyor?
-           — String çift tık → XRef listesi
-           — Import fonksiyonu çift tık → çağıran talimatları göster
-
-  [x] 1.5  Disassembly içinden hex patch
-           — Talimat sağ tık → "NOP'la", "JMP ile değiştir"
-           — Değişiklik anında Patcher kuyruğuna eklensin
+  Tamamlanan özellikler (FAZ 1-6) → COMPLETED_V1.txt + FEATURES.md
+  12 modül · 7163 satır · 769 KB bundle · 15 Rust komutu
 
 
 ══════════════════════════════════════════════════════════════════════════
-  FAZ 2 — AI GELİŞMİŞ ZEKA                     Öncelik: ★★★★☆
+  FAZ 7 — KOD MİMARİSİ & PERFORMANS             Öncelik: ★★★★★
 ══════════════════════════════════════════════════════════════════════════
 
-  Amaç: AI'ı pasif sohbetten aktif analiz partnerine dönüştür
+  Amaç: 7100+ satırlık monolith App.jsx'i modüler yapıya taşı,
+        yükleme hızını ve bakım kalitesini artır.
 
-  [x] 2.1  Bağlamsal bellek (Context Memory)
-           — Son N tarama özetini otomatik system prompt'a ekle
-           — "Bu binary'yi daha önce tarattım, hatırlıyor musun?"
-           — Bellek yönetimi: temizle / max token limiti ayarla
+  [ ] 7.1  Component bölünmesi (Code Split)
+           — App.jsx → ayrı dosyalara taşı:
+             src/components/Scanner/ScannerPage.jsx
+             src/components/Patcher/PatcherPage.jsx
+             src/components/Disasm/DisassemblyPage.jsx
+             src/components/Chat/ChatPage.jsx
+             src/components/System/SystemPage.jsx
+             src/components/Plugins/PluginPage.jsx
+             src/components/Dashboard/DashboardPage.jsx
+             src/components/Advanced/ProcessAttachPage.jsx
+             src/components/Advanced/DebuggerPage.jsx
+             src/components/Advanced/EmulationPage.jsx
+             src/components/Advanced/NetworkCapturePage.jsx
+             src/components/Advanced/FlirtPage.jsx
+             src/components/shared/Card.jsx
+             src/components/shared/NavItem.jsx
+             src/components/shared/WinBtn.jsx
+             src/components/shared/MdText.jsx
+           — React.lazy + Suspense ile lazy loading
+           — Her modül kendi CSS/style'ını taşısın
 
-  [x] 2.2  Çoklu dosya AI karşılaştırması
-           — İki binary'nin scanner JSON'larını yan yana AI'a gönder
-           — "Bu ikisi arasındaki farkları analiz et" tek tıkla
+  [ ] 7.2  State yönetimi (Zustand / Context)
+           — localStorage erişimlerini merkezi store'a topla
+           — scanHistory, theme, lang, plugins, projects → tek store
+           — Component'lar arası iletişimi event bus yerine store ile yap
 
-  [x] 2.3  Hex aralığı açıklama
-           — Hex viewer'da bölge seç → "AI'a Sor" butonu
-           — Seçili baytlar + offset bilgisiyle AI'a gönder
-           — "Bu 64 byte ne olabilir? Struct olarak tahmin et"
+  [ ] 7.3  Virtual scroll (react-window)
+           — Disassembly binlerce satır → sanal kaydırma
+           — Scanner sonuç listesi → virtualized table
+           — Network capture paket listesi → virtualized
+           — Performans: 10K+ satırda 60fps hedefi
 
-  [x] 2.4  Otomatik IOC çıkarımı
-           — AI yanıtlarından IP/domain/hash/yol otomatik parse et
-           — Bulunan IOC'ları ayrı tabloda göster
-           — Tek tıkla YARA kuralına dönüştür
+  [ ] 7.4  Web Worker offloading
+           — String extraction + classification → Worker thread
+           — Entropy hesaplama → Worker thread
+           — CRC32/MD5 hesaplama → Worker thread
+           — Ana thread'i bloklamadan ağır JS işlemleri
 
-  [x] 2.5  AI güven skoru
-           — Her yanıta %0-100 kesinlik derecesi ekle
-           — "Emin değilim" vs "Yüksek olasılıkla" renk kodlu
-
-  [x] 2.6  Fonksiyon decompile tahmini
-           — Disassembly'den seçili fonksiyonu AI'a gönder
-           — "Bu assembly'yi C/C++ pseudocode'a çevir"
-           — Sonucu syntax-highlighted panel'de göster
-
-  [x] 2.7  Otomatik YARA kural sihirbazı
-           — Scanner bulgularından AI destekli kural üretimi
-           — Kullanıcı düzenleyebilsin, test edebilsin
-           — Kural kütüphanesi (kaydet/yükle/paylaş)
-
-
-══════════════════════════════════════════════════════════════════════════
-  FAZ 3 — RUST BACKEND GÜÇLENDİRME             Öncelik: ★★★★☆
-══════════════════════════════════════════════════════════════════════════
-
-  Amaç: Frontend yükünü azalt, performansı artır
-
-  [x] 3.1  Tam PE parsing'i Rust'a taşı
-           — JS'de yapılan string çıkarımı, YARA, heuristic → Rust'a al
-           — ~500ms JS parse → <50ms Rust parse
-           — scan_pe_full komutu: sections, strings, imports, exports,
-             hashing (MD5/SHA1/SHA256/CRC32/imphash), packer detection,
-             risk scoring, Rich header, overlay, .NET, code caves, WRX,
-             delayed imports, debug PDB, EP bytes, resources, YARA rules
-
-  [x] 3.2  UPX dışında packer unpack desteği
-           — ASPack, PECompact, MPRESS, Petite algılama + unpack
-           — Generic entropy-based unpack denemesi
-           — try_unpack komutu: 9 section-name + 4 EP-byte signature
-
-  [x] 3.3  Memory dump analizi geliştirme
-           — .dmp dosya formatı proper parsing (MDMP header)
-           — Process memory region'ları ayırt etme (entropy zones)
-           — PE reconstruction from dump (extract_pe_from_dump)
-           — analyze_dump_enhanced: MDMP streams, embedded PE images,
-             memory regions, PE extraction support
-
-  [x] 3.4  ssdeep fuzzy hashing
-           — CTPH (Context-Triggered Piecewise Hashing) implementasyonu
-           — fuzzy_hash + fuzzy_compare komutları
-           — Geçmişteki taramalarla benzerlik skoru (LCS similarity)
-
-  [x] 3.5  Paralel toplu tarama
-           — Rayon thread pool ile çoklu dosya eşzamanlı analiz
-           — batch_scan komutu + batch-progress event'leri
-           — Frontend: Rust batch scanner otomatik kullanılır
-
-  [x] 3.6  ELF / Mach-O desteği
-           — goblin ile ELF parsing: sections, dynsyms, libraries
-           — Mach-O parsing: segments, libs (Fat binary desteği)
-           — scan_generic komutu: otomatik format tespiti
+  [ ] 7.5  Bundle optimizasyonu
+           — Vite code splitting (manualChunks)
+           — react-flow → lazy import (sadece Disasm'da)
+           — dagre → lazy import (sadece CFG'de)
+           — Tree shaking: kullanılmayan lucide ikonlarını at
+           — Hedef: 769KB → <400KB gzipped
 
 
 ══════════════════════════════════════════════════════════════════════════
-  FAZ 4 — PRO UX & RAPORLAMA                    Öncelik: ★★★☆☆
+  FAZ 8 — GERÇEK BACKEND ENTEGRASYONLARı        Öncelik: ★★★★★
 ══════════════════════════════════════════════════════════════════════════
 
-  Amaç: Profesyonel kullanım ve çıktı kalitesi
+  Amaç: FAZ 6'daki mock/simüle sayfaları gerçek Rust
+        backend'lere bağla. Windows API entegrasyonu.
 
-  [x] 4.1  PDF rapor dışa aktarımı
-           — Browser Print API ile styled HTML rapor
-           — Logo + tarih + risk özeti kapak sayfası
-           — Packer/DLL dağılımı + detay tablosu
-           — Dashboard'dan tek tıkla PDF export
+  [ ] 8.1  Gerçek Process Enumeration (Rust)
+           — windows-rs crate ile EnumProcesses / OpenProcess
+           — Süreç listesi gerçek PID/isim/modules/threads
+           — Yetki kontrolü (IsElevated check)
+           — Tauri komutu: list_processes
 
-  [x] 4.2  Gelişmiş binary diff
-           — 2048 byte hex diff (512’den genişletildi)
-           — Diff region tespiti + heatmap şerit
-           — Import diff (added/removed DLL)
-           — String diff (added/removed stringler)
-           — Diff özeti: changed bytes, regions, size diff
+  [ ] 8.2  Gerçek bellek okuma (Rust)
+           — ReadProcessMemory API entegrasyonu
+           — VirtualQueryEx ile bellek bölge haritası
+           — Tauri komutu: read_process_memory(pid, addr, size)
+           — Tauri komutu: query_memory_regions(pid)
 
-  [x] 4.3  Dashboard / İstatistik sayfası
-           — DashboardPage component + VIEWS.DASHBOARD
-           — StatCard: toplam, high/moderate/clean, avg risk, x64/x86
-           — Zaman çizelgesi: son 14 gün bar chart
-           — Koruma tespiti dağılımı (Denuvo/VMP/Themida/AntiDebug/AntiVM)
-           — Packer dağılımı horizontal bar
-           — En sık DLL'ler bar chart
+  [ ] 8.3  Gerçek debugger (Rust)
+           — windows-rs: DebugActiveProcess / WaitForDebugEvent
+           — SetBreakpoint (INT3 injection)
+           — GetThreadContext / SetThreadContext (registers)
+           — Single-step (TRAP flag)
+           — Tauri komutları: attach_debugger, set_breakpoint,
+             step_into, continue_execution, get_registers
 
-  [x] 4.4  Gelişmiş arama
-           — Regex toggle ile dosya adı/hash/packer/string arama
-           — Filtreler: mimari (x64/x86), risk (high/moderate/clean)
-           — Packer filtresi (dinamik liste), tarih aralığı (from/to)
-           — Sonuç tablosu: dosya, arch, risk, packer, SHA-256, tarih
+  [ ] 8.4  Gerçek disassembly-on-attach
+           — Attach edilen sürecin belleğini oku → capstone ile disassemble
+           — RIP/EIP'den itibaren canlı disassembly
+           — Tauri komutu: disassemble_memory(pid, addr, size)
 
-  [x] 4.5  Workspace / Proje kavramı
-           — Proje oluşturma/silme, localStorage persistance
-           — Projeye filtreli sonuçları ekleme
-           — Proje filtresi: sadece proje dosyalarını göster
-           — Proje JSON export (proje + tüm tarama verileri)
+  [ ] 8.5  Unicorn Engine emülasyon (Rust)
+           — unicorn-engine crate entegrasyonu
+           — Seçili fonksiyonu emüle et
+           — Register snapshot her adımda
+           — Bellek yazma callback'leri
+           — Tauri komutu: emulate_function(bytes, arch, start_addr)
 
-  [x] 4.6  Yerelleştirme altyapısı (i18n)
-           — LANGS objesi: TR + EN locale string sözlüğü
-           — useLang() hook: lang, setLang, t() accessor
-           — localStorage ile dil tercihi saklanması
-           — Scanner/Dashboard/Nav string key’leri hazır
-
-
-══════════════════════════════════════════════════════════════════════════
-  FAZ 5 — PLUGİN EKOSİSTEMİ                     Öncelik: ★★☆☆☆
-══════════════════════════════════════════════════════════════════════════
-
-  Amaç: Topluluk katkısına açık genişletilebilir mimari
-
-  [x] 5.1  Plugin yükleyici
-           — Dosya sisteminden .js plugin yükleme (file picker)
-           — Plugin manifest: id, name, version, author, desc, tags, code
-           — Sandbox execution: new Function() ile izole ortam
-           — Sadece Dissect API + console erişimi (DOM/fetch/eval yok)
-           — localStorage persistance (dissect_plugins_v2)
-
-  [x] 5.2  Plugin mağazası UI
-           — Marketplace tab: 3 örnek plugin (String Decoder, Crypto ID, Import HL)
-           — Kur / Kaldır / ON/OFF toggle
-           — Yıldız derecelendirme (1-5, localStorage)
-           — Arama (isim + etiket filtresi)
-           — İndirme sayısı göstergesi
-
-  [x] 5.3  Plugin API genişletme
-           — DissectPluginAPI objesi: onScan, onPatch, onDisassemble hook’ları
-           — registerCommand() — Ctrl+K komut paletine ekleme
-           — registerView() — özel panel kaydı
-           — accessAI() — AI’a prompt gönderme
-           — log(), getHistory() yardımcılar
-           — API dokümantasyon tabı
-
-  [x] 5.4  Örnek plugin'ler
-           — "String Decoder" — Base64/XOR/ROT13 otomatik çözüm
-           — "Crypto Identifier" — AES/SHA/MD5/Blowfish/CRC32/TEA magic byte tespit
-           — "Import Highlighter" — 7 kategori tehlikeli API tespiti
-           — Her üçü markaşadan tek tıkla kurulabilir
+  [ ] 8.6  Ağ izleme (Rust)
+           — ETW (Event Tracing for Windows) ile process network events
+           — veya raw socket / npcap entegrasyonu
+           — DNS query, TCP connect, HTTP request capture
+           — Tauri komutu: start_network_capture(pid), stop_capture
 
 
 ══════════════════════════════════════════════════════════════════════════
-  FAZ 6 — İLERİ SEVİYE                          Öncelik: ★☆☆☆☆
+  FAZ 9 — YAPAY ZEKA v2                         Öncelik: ★★★★☆
 ══════════════════════════════════════════════════════════════════════════
 
-  Amaç: Profesyonel RE araçlarıyla rekabet
+  Amaç: AI'ı reaktif chatbot'tan proaktif analiz asistanına dönüştür.
 
-  [x] 6.1  Canlı süreç bağlanma (process attach)
-           — Süreç listesi UI: PID, isim, arch, bellek, thread, kullanıcı
-           — Sıralama + arama + Attach/Detach
-           — Bellek bölgeleri tablosu (12 mock region: PE, .text, heap, DLL, stack)
-           — Bellek okuma: hex dump görüntüleyici (adres + hex + ASCII)
-           — Süreç detay paneli: 8 alan (PID, isim, arch, bellek, thread, modül, parent, user)
-           — ⚠ Gerçek attach için Windows API + Admin yetkisi gerekir
+  [ ] 9.1  Multi-model desteği
+           — Aynı anda birden fazla LLM bağlantısı
+           — Model A: hızlı cevap (7B), Model B: derin analiz (70B)
+           — Her yanıtta hangi modelin kullanıldığını göster
+           — Model karşılaştırma modu (aynı soruyu 2 modele sor)
 
-  [x] 6.2  Debugger entegrasyonu
-           — Breakpoint koy/kaldır/toggle (adres bazlı, hit sayacı)
-           — Step Into / Step Over / Run / Restart kontrolleri
-           — 22 satır mock disassembly (sub_4012C0 fonksiyonu)
-           — x86/x64 register görünümü (18 register, EIP/RIP vurgu)
-           — Call stack paneli (8 frame)
-           — Debug log (renkli: break/step/run)
-           — Breakpoint yönetim paneli
+  [ ] 9.2  RAG (Retrieval-Augmented Generation)
+           — Tüm tarama geçmişini vector DB'ye indexle (sqlite-vss veya qdrant)
+           — "Bu binary'ye benzer daha önce ne taradım?" → semantic arama
+           — AI yanıtlarında otomatik referans göstergesi
+           — Bilgi tabanı: MITRE ATT&CK, CVE, malware family tanımları
 
-  [x] 6.3  Emülasyon motoru
-           — 12 adım emülasyon trace (sub_4012C0 tam fonksiyon)
-           — Run All / Step / Reset kontrolleri + hız ayarı (50-1000ms)
-           — Register değişim vurgulama (changed → sarı)
-           — Bellek yazma takibi (addr, val, note)
-           — Execution log (tamamlanan talimatlar)
-           — Unicorn Engine API hazırlığı
+  [ ] 9.3  Otomatik rapor üretimi (AI)
+           — Tarama sonuçlarını AI ile doğal dilde rapor yaz
+           — Executive summary + teknik detay + IOC listesi + öneri
+           — Dil seçimi: TR / EN
+           — PDF olarak export
 
-  [x] 6.4  Ağ trafiği yakalama
-           — 15 paket mock sandbox capture (DNS/TCP/TLS/HTTP/UDP/ICMP)
-           — Gerçekçi C2 senaryosu: DNS → TLS handshake → POST beacon → stage2 download
-           — Flag sistemi: malicious/suspicious/clean (renkli)
-           — İstatistik paneli: toplam, flag dağılımı, protokol sayıları, boyut
-           — Arama + filtre (protokol, IP, içerik)
-           — Paket detay paneli (tıkla → genişletilmiş bilgi)
+  [ ] 9.4  AI Agent modu
+           — "Bu binary'yi analiz et" → AI kendisi adım adım çalışsın:
+             1. Scanner çalıştır
+             2. Sonuçları oku
+             3. Disassembly'den EP fonksiyonunu analiz et
+             4. YARA kuralı öner
+             5. Rapor yaz
+           — ReAct (Reason + Act) pattern
+           — Kullanıcıya her adımda ne yaptığını göster
 
-  [x] 6.5  FLIRT imza veritabanı
-           — 20 imza: MSVCRT (5), WS2_32 (4), ADVAPI32 (2), KERNEL32 (4), NTDLL (1), CRYPT32 (1), OpenSSL (1), ZLIB (1)
-           — 8 kategori: CRT, Network, Registry, FileIO, Memory, Process, Crypto, Compression
-           — Kategori filtresi + arama
-           — Confidence bar (%75-98 arası)
-           — "Binary'de Ara" butonu — rastgele eşleşme simülasyonu
-           — Eşleşme sonuç tablosu (adres + skor)
+  [ ] 9.5  AI bilgi grafiği (Knowledge Graph)
+           — Taranan dosyalar arasındaki ilişkileri çıkar
+           — Aynı C2 domain → aynı kampanya
+           — Benzer import pattern → aynı family
+           — Interaktif graf görselleştirme (React Flow)
+
+  [ ] 9.6  Fine-tune desteği
+           — Kullanıcının tarama verilerinden LoRA fine-tune
+           — "Bu doğru analiz" / "Bu yanlış" geri bildirim sistemi
+           — Eğitim veri seti dışa aktarımı (JSONL)
+
+
+══════════════════════════════════════════════════════════════════════════
+  FAZ 10 — COLLABORATIVE & CLOUD                Öncelik: ★★★☆☆
+══════════════════════════════════════════════════════════════════════════
+
+  Amaç: Takım çalışması ve bulut yetenekleri.
+
+  [ ] 10.1  Tarama paylaşımı
+           — Tarama sonucunu link ile paylaş (kısa URL)
+           — JSON + metadata paketleme
+           — Import: başkasının taramasını yükle
+           — End-to-end encrypted paylaşım seçeneği
+
+  [ ] 10.2  Takım workspace
+           — Birden fazla kullanıcıyla proje paylaşımı
+           — Yorum/not ekleme (annotation)
+           — Tarama atama: "bu dosyayı sen analiz et"
+           — Audit log: kim ne zaman ne yaptı
+
+  [ ] 10.3  Cloud YARA / IOC feed
+           — Topluluk YARA kurallarını otomatik çek
+           — AlienVault OTX, Abuse.ch, MalwareBazaar entegrasyonu
+           — IOC feed subscription (günlük güncelleme)
+           — Kuralları lokal DB'de sakla
+
+  [ ] 10.4  Remote AI backend
+           — Cloud LLM API desteği (OpenAI, Anthropic, Groq)
+           — API key yönetimi (güvenli Tauri keyring)
+           — Fallback: local model yoksa cloud'a git
+           — Token kullanımı takibi + maliyet hesabı
+
+  [ ] 10.5  WebSocket canlı paylaşım
+           — İki analist aynı dosyayı aynı anda görsün
+           — Cursor takibi (hex viewer'da "diğer kişi burada")
+           — Chat + annotation real-time sync
+
+
+══════════════════════════════════════════════════════════════════════════
+  FAZ 11 — İLERİ BINARY ANALİZ                  Öncelik: ★★★☆☆
+══════════════════════════════════════════════════════════════════════════
+
+  Amaç: Derin statik ve dinamik analiz yetenekleri.
+
+  [ ] 11.1  Symbolic Execution
+           — angr veya z3 tabanlı sembolik yürütme
+           — "Bu şifre kontrolünü geçmek için input ne olmalı?"
+           — Path constraint çözümleme
+           — UI'da path tree görselleştirme
+
+  [ ] 11.2  Taint Analysis
+           — Kullanıcı girdisini (argv, stdin, recv) takip et
+           — Verinin bellekte nereye gittiğini göster
+           — "Bu input doğrudan call eax'a mı ulaşıyor?" (vuln tespiti)
+           — Tainted register/memory vurgulama
+
+  [ ] 11.3  Anti-obfuscation
+           — Control flow flattening tespiti + geri alma
+           — Dead code elimination
+           — Opaque predicate tespiti
+           — String deobfuscation (XOR/RC4/custom loop tespiti)
+
+  [ ] 11.4  Shellcode analizi
+           — Raw shellcode yükleme + emülasyon
+           — API resolution takibi (PEB/TEB walking)
+           — Shellcode → C decompile
+           — Position-independent code tespiti
+
+  [ ] 11.5  Diff patching (IDA BinDiff benzeri)
+           — İki binary'nin fonksiyonlarını eşleştir
+           — Değişen fonksiyonları vurgula
+           — Patch vs original karşılaştırması
+           — Diff sonuçlarını export (HTML rapor)
+
+  [ ] 11.6  Type Recovery
+           — Stack frame'den struct tanıma
+           — vtable'dan C++ sınıf hiyerarşisi çıkarımı
+           — RTTI bilgisinden sınıf adları
+           — Struct editor: kullanıcı kendi type'larını tanımlasın
+
+
+══════════════════════════════════════════════════════════════════════════
+  FAZ 12 — PLATFORM & EKOSİSTEM                 Öncelik: ★★☆☆☆
+══════════════════════════════════════════════════════════════════════════
+
+  Amaç: Farklı platformlar, otomasyon ve topluluk.
+
+  [ ] 12.1  Linux & macOS desteği
+           — Tauri cross-compile: Linux .deb/.AppImage, macOS .dmg
+           — Platform-specific API'ları abstract et
+           — Linux: ptrace debugger, /proc/pid/maps
+           — macOS: mach_vm_read, task_for_pid
+
+  [ ] 12.2  CLI modu
+           — dissect-cli: terminal'den tarama, batch analiz
+           — JSON çıktı formatı (pipe-friendly)
+           — CI/CD entegrasyonu: build pipeline'da binary scan
+           — Otomatik rapor üretimi (--report flag)
+
+  [ ] 12.3  Scripting Engine (Lua / JS)
+           — IDAPython benzeri scripting desteği
+           — Script editor (Monaco Editor entegrasyonu)
+           — Script kütüphanesi + paylaşım
+           — Otomatik analiz scriptleri
+
+  [ ] 12.4  Tema ve layout editörü
+           — Kullanıcı kendi temasını oluştursun (renk picker)
+           — Layout kaydetme: hangi paneller nerede
+           — Panel dock sistemi (split view, tab, float)
+           — Workspace layout import/export
+
+  [ ] 12.5  Topluluk hub
+           — Plugin mağazasını remote repository'ye bağla
+           — YARA kural paylaşım platformu
+           — Malware sample exchange (hash-only, legal)
+           — Leaderboard: en çok kural/plugin paylaşan
 
 
 ══════════════════════════════════════════════════════════════════════════
   ÖNERİLEN GELİŞTİRME SIRASI
 ══════════════════════════════════════════════════════════════════════════
 
-  Sprint 1 — Temel Güç (En yüksek etki)
+  Sprint 6 — Mimari Temizlik (En kritik)
   ──────────────────────────────────────
-  → 1.1  Tam disassembly görünümü
-  → 1.2  Fonksiyon listesi paneli
-  → 2.1  AI bağlamsal bellek
-  → 2.3  Hex aralığı AI açıklama
-  → 3.1  PE parsing Rust'a taşıma (performans)
+  → 7.1  Component bölünmesi (code split)
+  → 7.2  State yönetimi (Zustand)
+  → 7.5  Bundle optimizasyonu
+  → 7.3  Virtual scroll
 
-  Sprint 2 — Derin Analiz
+  Sprint 7 — Gerçek Backend
   ──────────────────────────────────────
-  → 1.3  Temel blok grafiği (CFG)
-  → 1.4  Cross-reference (XRef)
-  → 2.6  Fonksiyon decompile tahmini
-  → 2.2  Çoklu dosya AI karşılaştırması
-  → 3.5  Paralel toplu tarama
+  → 8.1  Gerçek process enumeration
+  → 8.2  Gerçek bellek okuma
+  → 8.4  Disassembly-on-attach
+  → 8.3  Gerçek debugger
 
-  Sprint 3 — Profesyonel Çıktı
+  Sprint 8 — AI Evolution
   ──────────────────────────────────────
-  → 4.1  PDF rapor
-  → 4.2  Gelişmiş binary diff
-  → 4.3  Dashboard
-  → 2.4  Otomatik IOC çıkarımı
-  → 2.7  YARA kural sihirbazı
+  → 9.1  Multi-model desteği
+  → 9.3  Otomatik rapor üretimi
+  → 9.4  AI Agent modu
+  → 9.2  RAG + semantic arama
 
-  Sprint 4 — Altyapı & Ekosistem
+  Sprint 9 — Profesyonel RE
   ──────────────────────────────────────
-  → 4.6  i18n (yerelleştirme)
-  → 5.1  Plugin yükleyici
-  → 5.4  Örnek plugin'ler
-  → 3.2  Ek packer unpack
-  → 3.4  ssdeep fuzzy hashing
+  → 11.4  Shellcode analizi
+  → 11.3  Anti-obfuscation
+  → 11.5  BinDiff
+  → 8.5   Unicorn emülasyon
 
-  Sprint 5 — İleri Seviye (İsteğe Bağlı)
+  Sprint 10 — Platform & Topluluk
   ──────────────────────────────────────
-  → 1.5  Disassembly'den patch
-  → 6.1  Process attach
-  → 6.3  Emülasyon motoru
-  → 3.6  ELF/Mach-O desteği
-  → 5.2  Plugin mağazası
+  → 12.1  Cross-platform
+  → 12.2  CLI modu
+  → 12.3  Scripting engine
+  → 10.3  Cloud IOC feed
 
 
 ══════════════════════════════════════════════════════════════════════════
   TEKNİK NOTLAR
 ══════════════════════════════════════════════════════════════════════════
 
-  • Disassembly:  capstone-rs zaten entegre. Rust tarafında chunk-based
-    disassembly endpoint'i eklemek yeterli. Frontend'de sanal scroll
-    (react-window veya custom virtualizer) gerekli.
+  • Kod Bölme:  Vite dynamic import + React.lazy ile. Her Page
+    component'ı kendi dosyasında. Shared state → Context veya Zustand.
+    Migrasyon sırası: en bağımsız sayfadan başla (Dashboard → System
+    → Plugins → Patcher → Chat → Scanner → Disasm → App shell).
 
-  • CFG:  react-flow veya elkjs layout ile. Rust'tan basic block
-    JSON döndür, frontend'de render et. ~500 talimata kadar sorunsuz.
+  • windows-rs:  Process enumeration + debugger için windows crate.
+    Cargo.toml'a features: ["Win32_System_Diagnostics_Debug",
+    "Win32_System_Threading", "Win32_System_ProcessStatus",
+    "Win32_Security"]. Admin yetki: manifest'e requestedExecutionLevel.
 
-  • AI Bellek:  Basit yaklaşım — son 3 tarama özetini system prompt'a
-    JSON olarak ekle. Token limiti aşarsa en eski özeti düşür.
+  • Unicorn Engine:  unicorn-engine Rust binding mevcut. x86/x64 arch,
+    hook_add ile instruction/memory callback. Emulation → JSON state
+    snapshot dizisi olarak frontend'e gönder.
 
-  • PDF:  jsPDF + html2canvas veya Tauri print komutu. Rapor şablonunu
-    HTML olarak oluştur, CSS @media print ile tasarla.
+  • RAG:  sqlite-vss (SQLite vector search) veya tantivy (Rust FTS).
+    Her tarama sonucunu embedding'e dönüştür (local model ile).
+    Soru geldiğinde → benzer taramaları bul → context'e ekle.
 
-  • i18n:  react-i18next veya basit bir JSON sözlük sistemi. Tüm
-    hardcoded Türkçe stringleri anahtar-değer çiftine taşı.
+  • AI Agent:  Tauri komutlarını sırasıyla çağıran bir loop. Her
+    adımda AI'a "şimdiye kadarki bulgularım" + "sıradaki hamle ne?"
+    sor. ReAct format: Thought → Action → Observation → repeat.
 
-  • Plugin Sandbox:  Web Worker veya <iframe sandbox> ile izole et.
-    Plugin'e sınırlı API objesi geç (window erişimi yok).
+  • Cross-platform:  Tauri 2 zaten Linux/macOS destekler. Platform-
+    specific kodlar (windows-rs) → cfg(target_os) ile koşullu compile.
+    Linux'ta ptrace, macOS'ta mach_* syscalls.
 
-  • Performans:  String çıkarımı + YARA + heuristic kontrolleri
-    Rust'a taşınırsa tarama süresi %80 düşer.
-    Mevcut ~4100 satırlık App.jsx'i component'lara bölmek
-    bakım kolaylığı için kritik (Scanner, Patcher, Chat, System
-    ayrı dosyalar).
+  • CLI:  clap crate + ayrı bin target (src/bin/dissect_cli.rs).
+    JSON output → stdout. Non-interactive batch mode.
 
-  • Kod Organizasyonu Önerisi:
-    src/
-      components/
-        Scanner/     — ScannerPage + alt bileşenler
-        Patcher/     — PatcherPage + hex viewer
-        Chat/        — ChatPage + mesaj bileşenleri
-        System/      — SystemPage + GPU wizard
-        Plugins/     — PluginPage + sandbox
-        shared/      — Card, Modal, Tooltip, vs.
-      hooks/         — useScanner, usePatcher, useChat, useTheme
-      utils/         — pe-parser, yara-engine, formatters
-      i18n/          — tr.json, en.json
-      App.jsx        — sadece routing + layout (~200 satır)
 
 ══════════════════════════════════════════════════════════════════════════
+  MEVCUT DURUM ÖZETİ (v4 başlangıç)
+══════════════════════════════════════════════════════════════════════════
+
+  Tamamlanan:
+    FAZ 1 — Disassembly & Kod Gezgini          (5/5 madde) ✅
+    FAZ 2 — AI Gelişmiş Zeka                   (7/7 madde) ✅
+    FAZ 3 — Rust Backend Güçlendirme           (6/6 madde) ✅
+    FAZ 4 — Pro UX & Raporlama                 (6/6 madde) ✅
+    FAZ 5 — Plugin Ekosistemi                  (4/4 madde) ✅
+    FAZ 6 — İleri Seviye                       (5/5 madde) ✅
+    ─────────────────────────────────────────────────
+    TOPLAM: 33/33 madde · 12 view · 15 Rust komutu
+
+  Teknik Borç:
+    ⚠ App.jsx = 7163 satır (monolith → bölünmeli)
+    ⚠ Bundle = 769 KB (hedef: <400 KB)
+    ⚠ FAZ 6 sayfaları mock data kullanıyor (gerçek API gerekli)
+    ⚠ localStorage dağınık (merkezi store gerekli)
+
+  Hedef:
+    FAZ 7-12 → 33 yeni madde · ~6 sprint · endüstriyel kalite
 
