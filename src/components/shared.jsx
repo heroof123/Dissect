@@ -1,4 +1,5 @@
 ﻿import React, { useState } from 'react';
+import { ChevronRight } from 'lucide-react';
 
 function WinBtn({ onClick, danger, children }) {
   const [h, setH] = useState(false);

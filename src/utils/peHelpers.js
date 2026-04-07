@@ -627,5 +627,5 @@ export {
   _pluginHooks, getPluginCommands,
   getHistory, addToHistory, getStarred, toggleStarred,
   CRC32_TABLE, calcCRC32, calcMD5,
-  analyzePE,
+  analyzePE, getNotes, saveNote, getPluginViews,
 };

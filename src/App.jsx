@@ -314,7 +314,7 @@ export default function App() {
         const CMD_LIST = [
           { label: '🔍 Scanner — PE Analiz',      action: () => { setView(VIEWS.SCANNER); setCmdOpen(false); } },
           { label: '🔧 Patcher — Hex Düzenle',    action: () => { setView(VIEWS.PATCHER); setCmdOpen(false); } },
-          { label: 'u{1F52C} Analyst (AI Chat)',             action: () => { setView(VIEWS.CHAT);    setCmdOpen(false); } },
+          { label: '🔬 Analyst (AI Chat)',             action: () => { setView(VIEWS.CHAT);    setCmdOpen(false); } },
           { label: '💬 AI Chat',                   action: () => { setView(VIEWS.CHAT);    setCmdOpen(false); } },
           { label: '⚙️ System & Models',           action: () => { setView(VIEWS.SYSTEM);  setCmdOpen(false); } },
           { label: '🧩 Plugins',                   action: () => { setView(VIEWS.PLUGINS); setCmdOpen(false); } },

@@ -1,8 +1,9 @@
 ﻿import React, { useState, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
 import {
   Cpu, HardDrive, MemoryStick, Download, RefreshCw, FolderOpen,
-  Search, CheckCircle2, XCircle, Zap, Play
+  Search, CheckCircle2, XCircle, Zap, Play, Layers
 } from 'lucide-react';
 import { Card, CardHeader, Spinner } from './shared';
 

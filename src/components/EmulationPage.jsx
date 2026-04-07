@@ -2,7 +2,6 @@
 import { invoke } from '@tauri-apps/api/core';
 import { Play } from 'lucide-react';
 import { Card } from './shared';
-import { MOCK_DEBUG_DISASM } from './DebuggerPage';
 
 function EmulationPage() {
   const [hexInput, setHexInput] = useState('558BEC83EC105356578D45F050FF1500304000');
@@ -97,7 +96,7 @@ function EmulationPage() {
         <Card style={{ flex: 2, minWidth: 350 }}>
           <div style={{ fontSize: 11, fontWeight: 700, color: '#e6edf3', marginBottom: 6 }}>Emulation Trace</div>
           <div style={{ fontFamily: 'monospace', fontSize: 11, maxHeight: 340, overflowY: 'auto', borderRadius: 6, border: '1px solid rgba(255,255,255,0.06)' }}>
-            {EMU_STEPS.map((s, i) => (
+            {traceData.map((s, i) => (
               <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '3px 10px',
                 background: i === step ? 'rgba(99,102,241,0.15)' : i < step ? 'rgba(34,197,94,0.04)' : 'transparent',
                 borderLeft: i === step ? '3px solid #818cf8' : i < step ? '3px solid rgba(34,197,94,0.3)' : '3px solid transparent'
@@ -105,7 +104,7 @@ function EmulationPage() {
                 <span style={{ color: i < step ? '#22c55e' : i === step ? '#818cf8' : '#6e7681', fontSize: 9, minWidth: 12 }}>
                   {i < step ? '✓' : i === step ? '▸' : ' '}
                 </span>
-                <span style={{ color: '#818cf8', minWidth: 80 }}>{MOCK_DEBUG_DISASM[i]?.addr || ''}</span>
+                <span style={{ color: '#818cf8', minWidth: 80 }}>{s.addr ? ('0x' + s.addr.toString(16).padStart(8, '0').toUpperCase()) : ''}</span>
                 <span style={{ color: i === step ? '#e6edf3' : '#8b949e', fontWeight: i === step ? 700 : 400 }}>{s.inst}</span>
               </div>
             ))}
@@ -119,7 +118,7 @@ function EmulationPage() {
             {emuRegs ? (
               <div style={{ fontFamily: 'monospace', fontSize: 10 }}>
                 {Object.entries(emuRegs).map(([k, v]) => {
-                  const prev = step > 0 ? EMU_STEPS[step - 1]?.regs[k] : undefined;
+                  const prev = step > 0 ? traceData[step - 1]?.[k] : undefined;
                   const changed = prev !== undefined && prev !== v;
                   return (
                     <div key={k} style={{ display: 'flex', justifyContent: 'space-between', padding: '1px 4px', borderRadius: 3, background: changed ? 'rgba(245,158,11,0.1)' : (k === 'EIP' ? 'rgba(99,102,241,0.1)' : 'transparent') }}>

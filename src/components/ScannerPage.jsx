@@ -4,12 +4,13 @@ import {
   Zap, ShieldAlert, FileSearch, Binary, AlertTriangle, ShieldCheck,
   ChevronRight, Plus, Trash2, FolderOpen, Download, RefreshCw,
   Cpu, Bot, Microscope, CheckCircle2, XCircle, Search, Copy,
-  ChevronDown, Layers
+  ChevronDown, Layers, MessageSquare, Code
 } from 'lucide-react';
 import {
   analyzePE, STR_PATTERNS, YARA_RULES, YARA_SEV_COLOR,
   extractStrings, addToHistory, getHistory, getStarred, toggleStarred,
   STARRED_KEY, HISTORY_KEY, calcEntropy, calcCRC32, calcMD5, _pluginHooks,
+  getNotes, saveNote,
 } from '../utils/peHelpers';
 import { Card, CardHeader, Spinner, MdText } from './shared';
 

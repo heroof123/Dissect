@@ -4,7 +4,8 @@ import { listen } from '@tauri-apps/api/event';
 import {
   Send, Bot, MemoryStick, XCircle, CheckCircle2, MessageSquare,
   Plus, Trash2, RefreshCw, Copy, Search, Download,
-  ChevronDown, Zap, AlertTriangle, CircleDot
+  ChevronDown, Zap, AlertTriangle, CircleDot, ShieldAlert,
+  X, Layers, Microscope
 } from 'lucide-react';
 import { Card, CardHeader, Spinner, MdText } from './shared';
 

@@ -3,7 +3,7 @@ import { invoke } from '@tauri-apps/api/core';
 import {
   Plus, Trash2, Play, Download, Copy, ChevronDown,
   Binary, RefreshCw, FolderOpen, Search, CheckCircle2, XCircle,
-  Zap, AlertTriangle, Bot
+  Zap, AlertTriangle, Bot, MessageSquare
 } from 'lucide-react';
 import { Card, CardHeader, Spinner } from './shared';
 

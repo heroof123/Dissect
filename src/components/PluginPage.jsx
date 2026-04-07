@@ -3,7 +3,7 @@ import {
   ShieldAlert, Binary, FileSearch, Bot, Layers, Terminal, Cpu,
   Plus, Trash2, Play, Search, Download, RefreshCw, Code, Globe, Share2, Star
 } from 'lucide-react';
-import { _pluginHooks } from '../utils/peHelpers';
+import { _pluginHooks, getPluginViews } from '../utils/peHelpers';
 import { Card, CardHeader } from './shared';
 
 const DissectPluginAPI = {
