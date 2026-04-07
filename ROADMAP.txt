@@ -20,7 +20,7 @@
   Amaç: 7100+ satırlık monolith App.jsx'i modüler yapıya taşı,
         yükleme hızını ve bakım kalitesini artır.
 
-  [ ] 7.1  Component bölünmesi (Code Split)
+  [x] 7.1  Component bölünmesi (Code Split)
            — App.jsx → ayrı dosyalara taşı:
              src/components/Scanner/ScannerPage.jsx
              src/components/Patcher/PatcherPage.jsx
@@ -41,24 +41,24 @@
            — React.lazy + Suspense ile lazy loading
            — Her modül kendi CSS/style'ını taşısın
 
-  [ ] 7.2  State yönetimi (Zustand / Context)
+  [x] 7.2  State yönetimi (Zustand / Context)
            — localStorage erişimlerini merkezi store'a topla
            — scanHistory, theme, lang, plugins, projects → tek store
            — Component'lar arası iletişimi event bus yerine store ile yap
 
-  [ ] 7.3  Virtual scroll (react-window)
+  [x] 7.3  Virtual scroll (react-window)
            — Disassembly binlerce satır → sanal kaydırma
            — Scanner sonuç listesi → virtualized table
            — Network capture paket listesi → virtualized
            — Performans: 10K+ satırda 60fps hedefi
 
-  [ ] 7.4  Web Worker offloading
+  [x] 7.4  Web Worker offloading
            — String extraction + classification → Worker thread
            — Entropy hesaplama → Worker thread
            — CRC32/MD5 hesaplama → Worker thread
            — Ana thread'i bloklamadan ağır JS işlemleri
 
-  [ ] 7.5  Bundle optimizasyonu
+  [x] 7.5  Bundle optimizasyonu
            — Vite code splitting (manualChunks)
            — react-flow → lazy import (sadece Disasm'da)
            — dagre → lazy import (sadece CFG'de)
@@ -73,19 +73,19 @@
   Amaç: FAZ 6'daki mock/simüle sayfaları gerçek Rust
         backend'lere bağla. Windows API entegrasyonu.
 
-  [ ] 8.1  Gerçek Process Enumeration (Rust)
+  [x] 8.1  Gerçek Process Enumeration (Rust)
            — windows-rs crate ile EnumProcesses / OpenProcess
            — Süreç listesi gerçek PID/isim/modules/threads
            — Yetki kontrolü (IsElevated check)
            — Tauri komutu: list_processes
 
-  [ ] 8.2  Gerçek bellek okuma (Rust)
+  [x] 8.2  Gerçek bellek okuma (Rust)
            — ReadProcessMemory API entegrasyonu
            — VirtualQueryEx ile bellek bölge haritası
            — Tauri komutu: read_process_memory(pid, addr, size)
            — Tauri komutu: query_memory_regions(pid)
 
-  [ ] 8.3  Gerçek debugger (Rust)
+  [x] 8.3  Gerçek debugger (Rust)
            — windows-rs: DebugActiveProcess / WaitForDebugEvent
            — SetBreakpoint (INT3 injection)
            — GetThreadContext / SetThreadContext (registers)
@@ -93,19 +93,19 @@
            — Tauri komutları: attach_debugger, set_breakpoint,
              step_into, continue_execution, get_registers
 
-  [ ] 8.4  Gerçek disassembly-on-attach
+  [x] 8.4  Gerçek disassembly-on-attach
            — Attach edilen sürecin belleğini oku → capstone ile disassemble
            — RIP/EIP'den itibaren canlı disassembly
            — Tauri komutu: disassemble_memory(pid, addr, size)
 
-  [ ] 8.5  Unicorn Engine emülasyon (Rust)
+  [x] 8.5  Unicorn Engine emülasyon (Rust)
            — unicorn-engine crate entegrasyonu
            — Seçili fonksiyonu emüle et
            — Register snapshot her adımda
            — Bellek yazma callback'leri
            — Tauri komutu: emulate_function(bytes, arch, start_addr)
 
-  [ ] 8.6  Ağ izleme (Rust)
+  [x] 8.6  Ağ izleme (Rust)
            — ETW (Event Tracing for Windows) ile process network events
            — veya raw socket / npcap entegrasyonu
            — DNS query, TCP connect, HTTP request capture
@@ -118,25 +118,25 @@
 
   Amaç: AI'ı reaktif chatbot'tan proaktif analiz asistanına dönüştür.
 
-  [ ] 9.1  Multi-model desteği
+  [x] 9.1  Multi-model desteği
            — Aynı anda birden fazla LLM bağlantısı
            — Model A: hızlı cevap (7B), Model B: derin analiz (70B)
            — Her yanıtta hangi modelin kullanıldığını göster
            — Model karşılaştırma modu (aynı soruyu 2 modele sor)
 
-  [ ] 9.2  RAG (Retrieval-Augmented Generation)
+  [x] 9.2  RAG (Retrieval-Augmented Generation)
            — Tüm tarama geçmişini vector DB'ye indexle (sqlite-vss veya qdrant)
            — "Bu binary'ye benzer daha önce ne taradım?" → semantic arama
            — AI yanıtlarında otomatik referans göstergesi
            — Bilgi tabanı: MITRE ATT&CK, CVE, malware family tanımları
 
-  [ ] 9.3  Otomatik rapor üretimi (AI)
+  [x] 9.3  Otomatik rapor üretimi (AI)
            — Tarama sonuçlarını AI ile doğal dilde rapor yaz
            — Executive summary + teknik detay + IOC listesi + öneri
            — Dil seçimi: TR / EN
            — PDF olarak export
 
-  [ ] 9.4  AI Agent modu
+  [x] 9.4  AI Agent modu
            — "Bu binary'yi analiz et" → AI kendisi adım adım çalışsın:
              1. Scanner çalıştır
              2. Sonuçları oku
@@ -146,13 +146,13 @@
            — ReAct (Reason + Act) pattern
            — Kullanıcıya her adımda ne yaptığını göster
 
-  [ ] 9.5  AI bilgi grafiği (Knowledge Graph)
+  [x] 9.5  AI bilgi grafiği (Knowledge Graph)
            — Taranan dosyalar arasındaki ilişkileri çıkar
            — Aynı C2 domain → aynı kampanya
            — Benzer import pattern → aynı family
            — Interaktif graf görselleştirme (React Flow)
 
-  [ ] 9.6  Fine-tune desteği
+  [x] 9.6  Fine-tune desteği
            — Kullanıcının tarama verilerinden LoRA fine-tune
            — "Bu doğru analiz" / "Bu yanlış" geri bildirim sistemi
            — Eğitim veri seti dışa aktarımı (JSONL)
@@ -164,31 +164,31 @@
 
   Amaç: Takım çalışması ve bulut yetenekleri.
 
-  [ ] 10.1  Tarama paylaşımı
+  [x] 10.1  Tarama paylaşımı
            — Tarama sonucunu link ile paylaş (kısa URL)
            — JSON + metadata paketleme
            — Import: başkasının taramasını yükle
            — End-to-end encrypted paylaşım seçeneği
 
-  [ ] 10.2  Takım workspace
+  [x] 10.2  Takım workspace
            — Birden fazla kullanıcıyla proje paylaşımı
            — Yorum/not ekleme (annotation)
            — Tarama atama: "bu dosyayı sen analiz et"
            — Audit log: kim ne zaman ne yaptı
 
-  [ ] 10.3  Cloud YARA / IOC feed
+  [x] 10.3  Cloud YARA / IOC feed
            — Topluluk YARA kurallarını otomatik çek
            — AlienVault OTX, Abuse.ch, MalwareBazaar entegrasyonu
            — IOC feed subscription (günlük güncelleme)
            — Kuralları lokal DB'de sakla
 
-  [ ] 10.4  Remote AI backend
+  [x] 10.4  Remote AI backend
            — Cloud LLM API desteği (OpenAI, Anthropic, Groq)
            — API key yönetimi (güvenli Tauri keyring)
            — Fallback: local model yoksa cloud'a git
            — Token kullanımı takibi + maliyet hesabı
 
-  [ ] 10.5  WebSocket canlı paylaşım
+  [x] 10.5  WebSocket canlı paylaşım
            — İki analist aynı dosyayı aynı anda görsün
            — Cursor takibi (hex viewer'da "diğer kişi burada")
            — Chat + annotation real-time sync
@@ -200,37 +200,37 @@
 
   Amaç: Derin statik ve dinamik analiz yetenekleri.
 
-  [ ] 11.1  Symbolic Execution
+  [x] 11.1  Symbolic Execution
            — angr veya z3 tabanlı sembolik yürütme
            — "Bu şifre kontrolünü geçmek için input ne olmalı?"
            — Path constraint çözümleme
            — UI'da path tree görselleştirme
 
-  [ ] 11.2  Taint Analysis
+  [x] 11.2  Taint Analysis
            — Kullanıcı girdisini (argv, stdin, recv) takip et
            — Verinin bellekte nereye gittiğini göster
            — "Bu input doğrudan call eax'a mı ulaşıyor?" (vuln tespiti)
            — Tainted register/memory vurgulama
 
-  [ ] 11.3  Anti-obfuscation
+  [x] 11.3  Anti-obfuscation
            — Control flow flattening tespiti + geri alma
            — Dead code elimination
            — Opaque predicate tespiti
            — String deobfuscation (XOR/RC4/custom loop tespiti)
 
-  [ ] 11.4  Shellcode analizi
+  [x] 11.4  Shellcode analizi
            — Raw shellcode yükleme + emülasyon
            — API resolution takibi (PEB/TEB walking)
            — Shellcode → C decompile
            — Position-independent code tespiti
 
-  [ ] 11.5  Diff patching (IDA BinDiff benzeri)
+  [x] 11.5  Diff patching (IDA BinDiff benzeri)
            — İki binary'nin fonksiyonlarını eşleştir
            — Değişen fonksiyonları vurgula
            — Patch vs original karşılaştırması
            — Diff sonuçlarını export (HTML rapor)
 
-  [ ] 11.6  Type Recovery
+  [x] 11.6  Type Recovery
            — Stack frame'den struct tanıma
            — vtable'dan C++ sınıf hiyerarşisi çıkarımı
            — RTTI bilgisinden sınıf adları
@@ -243,31 +243,31 @@
 
   Amaç: Farklı platformlar, otomasyon ve topluluk.
 
-  [ ] 12.1  Linux & macOS desteği
+  [x] 12.1  Linux & macOS desteği
            — Tauri cross-compile: Linux .deb/.AppImage, macOS .dmg
            — Platform-specific API'ları abstract et
            — Linux: ptrace debugger, /proc/pid/maps
            — macOS: mach_vm_read, task_for_pid
 
-  [ ] 12.2  CLI modu
+  [x] 12.2  CLI modu
            — dissect-cli: terminal'den tarama, batch analiz
            — JSON çıktı formatı (pipe-friendly)
            — CI/CD entegrasyonu: build pipeline'da binary scan
            — Otomatik rapor üretimi (--report flag)
 
-  [ ] 12.3  Scripting Engine (Lua / JS)
+  [x] 12.3  Scripting Engine (Lua / JS)
            — IDAPython benzeri scripting desteği
            — Script editor (Monaco Editor entegrasyonu)
            — Script kütüphanesi + paylaşım
            — Otomatik analiz scriptleri
 
-  [ ] 12.4  Tema ve layout editörü
+  [x] 12.4  Tema ve layout editörü
            — Kullanıcı kendi temasını oluştursun (renk picker)
            — Layout kaydetme: hangi paneller nerede
            — Panel dock sistemi (split view, tab, float)
            — Workspace layout import/export
 
-  [ ] 12.5  Topluluk hub
+  [x] 12.5  Topluluk hub
            — Plugin mağazasını remote repository'ye bağla
            — YARA kural paylaşım platformu
            — Malware sample exchange (hash-only, legal)

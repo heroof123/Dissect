@@ -2875,6 +2875,1664 @@ fn patch_instruction(file_path: String, addr: u64, patch_type: String) -> Result
     })
 }
 
+// ══════════════════════════════════════════════════════════════════════
+// FAZ 8.1 — Real Process Enumeration (Windows API)
+// ══════════════════════════════════════════════════════════════════════
+
+#[cfg(target_os = "windows")]
+mod process_api {
+    use serde::Serialize;
+    use windows::Win32::System::Diagnostics::ToolHelp::*;
+    use windows::Win32::System::Threading::*;
+    use windows::Win32::Foundation::*;
+
+    #[derive(Serialize, Clone)]
+    pub struct ProcessInfo {
+        pub pid: u32,
+        pub name: String,
+        pub threads: u32,
+        pub parent_pid: u32,
+        pub exe_path: String,
+        pub memory_kb: u64,
+    }
+
+    pub fn enumerate_processes() -> Vec<ProcessInfo> {
+        let mut procs = Vec::new();
+        unsafe {
+            let snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+            if let Ok(snap) = snap {
+                let mut entry = PROCESSENTRY32W::default();
+                entry.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
+                if Process32FirstW(snap, &mut entry).is_ok() {
+                    loop {
+                        let name = String::from_utf16_lossy(
+                            &entry.szExeFile[..entry.szExeFile.iter().position(|&c| c == 0).unwrap_or(entry.szExeFile.len())]
+                        );
+                        let pid = entry.th32ProcessID;
+                        let threads = entry.cntThreads;
+                        let parent_pid = entry.th32ParentProcessID;
+
+                        let mut exe_path = String::new();
+                        let memory_kb;
+
+                        // Try to open process for query
+                        if let Ok(handle) = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) {
+                            let mut buf = [0u16; 260];
+                            let mut len = buf.len() as u32;
+                            if QueryFullProcessImageNameW(handle, PROCESS_NAME_WIN32, windows::core::PWSTR(buf.as_mut_ptr()), &mut len).is_ok() {
+                                exe_path = String::from_utf16_lossy(&buf[..len as usize]);
+                            }
+                            let _ = CloseHandle(handle);
+                        }
+
+                        // Memory via sysinfo (safer than direct API)
+                        memory_kb = 0; // filled in bulk below
+
+                        procs.push(ProcessInfo { pid, name, threads, parent_pid, exe_path, memory_kb });
+
+                        if Process32NextW(snap, &mut entry).is_err() { break; }
+                    }
+                }
+                let _ = CloseHandle(snap);
+            }
+        }
+
+        // Enrich memory data via sysinfo
+        use sysinfo::System;
+        let mut sys = System::new();
+        sys.refresh_processes();
+        for proc_info in &mut procs {
+            if let Some(p) = sys.process(sysinfo::Pid::from_u32(proc_info.pid)) {
+                proc_info.memory_kb = p.memory() / 1024;
+            }
+        }
+
+        procs
+    }
+}
+
+#[tauri::command]
+fn list_processes() -> Result<Vec<serde_json::Value>, String> {
+    #[cfg(target_os = "windows")]
+    {
+        let procs = process_api::enumerate_processes();
+        Ok(procs.iter().map(|p| serde_json::json!({
+            "pid": p.pid,
+            "name": p.name,
+            "threads": p.threads,
+            "parent_pid": p.parent_pid,
+            "exe_path": p.exe_path,
+            "memory_kb": p.memory_kb,
+        })).collect())
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        Err("Process enumeration only supported on Windows".into())
+    }
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// FAZ 8.2 — Real Memory Read (Windows API)
+// ══════════════════════════════════════════════════════════════════════
+
+#[cfg(target_os = "windows")]
+mod memory_api {
+    use serde::Serialize;
+    use windows::Win32::System::Threading::*;
+    use windows::Win32::System::Memory::*;
+    use windows::Win32::System::Diagnostics::Debug::ReadProcessMemory;
+    use windows::Win32::Foundation::*;
+
+    #[derive(Serialize)]
+    pub struct MemoryRegion {
+        pub base_address: String,
+        pub size: u64,
+        pub state: String,
+        pub protect: String,
+        pub region_type: String,
+    }
+
+    fn protect_str(p: PAGE_PROTECTION_FLAGS) -> String {
+        match p {
+            PAGE_READONLY => "R--".into(),
+            PAGE_READWRITE => "RW-".into(),
+            PAGE_EXECUTE => "--X".into(),
+            PAGE_EXECUTE_READ => "R-X".into(),
+            PAGE_EXECUTE_READWRITE => "RWX".into(),
+            PAGE_WRITECOPY => "WC-".into(),
+            PAGE_EXECUTE_WRITECOPY => "WCX".into(),
+            PAGE_NOACCESS => "---".into(),
+            _ => format!("0x{:X}", p.0),
+        }
+    }
+
+    pub fn query_memory_regions(pid: u32) -> Result<Vec<MemoryRegion>, String> {
+        unsafe {
+            let handle = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, false, pid)
+                .map_err(|e| format!("OpenProcess failed (PID {}): {}", pid, e))?;
+
+            let mut regions = Vec::new();
+            let mut address: usize = 0;
+
+            loop {
+                let mut mbi = MEMORY_BASIC_INFORMATION::default();
+                let result = VirtualQueryEx(
+                    handle,
+                    Some(address as *const std::ffi::c_void),
+                    &mut mbi,
+                    std::mem::size_of::<MEMORY_BASIC_INFORMATION>(),
+                );
+                if result == 0 { break; }
+
+                let state = match mbi.State {
+                    MEM_COMMIT => "Commit",
+                    MEM_RESERVE => "Reserve",
+                    MEM_FREE => "Free",
+                    _ => "Unknown",
+                };
+                let region_type = match mbi.Type {
+                    MEM_IMAGE => "Image",
+                    MEM_MAPPED => "Mapped",
+                    MEM_PRIVATE => "Private",
+                    _ => "-",
+                };
+
+                if mbi.State != MEM_FREE {
+                    regions.push(MemoryRegion {
+                        base_address: format!("0x{:016X}", mbi.BaseAddress as u64),
+                        size: mbi.RegionSize as u64,
+                        state: state.into(),
+                        protect: protect_str(mbi.Protect),
+                        region_type: region_type.into(),
+                    });
+                }
+
+                address = mbi.BaseAddress as usize + mbi.RegionSize;
+                if address == 0 { break; }
+            }
+
+            let _ = CloseHandle(handle);
+            Ok(regions)
+        }
+    }
+
+    pub fn read_process_mem(pid: u32, addr: u64, size: usize) -> Result<Vec<u8>, String> {
+        let read_size = size.min(4096);
+        unsafe {
+            let handle = OpenProcess(PROCESS_VM_READ, false, pid)
+                .map_err(|e| format!("OpenProcess failed: {}", e))?;
+
+            let mut buffer = vec![0u8; read_size];
+            let mut bytes_read = 0usize;
+            ReadProcessMemory(
+                handle,
+                addr as *const std::ffi::c_void,
+                buffer.as_mut_ptr() as *mut std::ffi::c_void,
+                read_size,
+                Some(&mut bytes_read),
+            ).map_err(|e| format!("ReadProcessMemory failed at 0x{:X}: {}", addr, e))?;
+
+            let _ = CloseHandle(handle);
+            buffer.truncate(bytes_read);
+            Ok(buffer)
+        }
+    }
+}
+
+#[tauri::command]
+fn query_memory_regions(pid: u32) -> Result<Vec<serde_json::Value>, String> {
+    #[cfg(target_os = "windows")]
+    {
+        let regions = memory_api::query_memory_regions(pid)?;
+        Ok(regions.iter().map(|r| serde_json::json!({
+            "base_address": r.base_address,
+            "size": r.size,
+            "state": r.state,
+            "protect": r.protect,
+            "type": r.region_type,
+        })).collect())
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        Err("Memory query only supported on Windows".into())
+    }
+}
+
+#[tauri::command]
+fn read_process_memory(pid: u32, address: String, size: usize) -> Result<String, String> {
+    #[cfg(target_os = "windows")]
+    {
+        let addr = if address.starts_with("0x") || address.starts_with("0X") {
+            u64::from_str_radix(&address[2..], 16).map_err(|_| "Invalid address")?
+        } else {
+            address.parse::<u64>().map_err(|_| "Invalid address")?
+        };
+        let bytes = memory_api::read_process_mem(pid, addr, size)?;
+        Ok(hex::encode(&bytes))
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        Err("Memory read only supported on Windows".into())
+    }
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// FAZ 8.3 — Real Debugger (Windows API)
+// ══════════════════════════════════════════════════════════════════════
+
+#[cfg(target_os = "windows")]
+mod debugger_api {
+    use serde::Serialize;
+    use windows::Win32::System::Threading::*;
+    use windows::Win32::System::Diagnostics::Debug::*;
+    use windows::Win32::Foundation::*;
+    use std::sync::Mutex;
+    use std::collections::HashMap;
+
+    // Raw FFI for x64 CONTEXT (windows-rs 0.58 doesn't cleanly export GetThreadContext/CONTEXT for x64)
+    #[repr(C, align(16))]
+    pub struct CONTEXT64 {
+        pub p1_home: u64, pub p2_home: u64, pub p3_home: u64, pub p4_home: u64,
+        pub p5_home: u64, pub p6_home: u64,
+        pub context_flags: u32, pub mx_csr: u32,
+        pub seg_cs: u16, pub seg_ds: u16, pub seg_es: u16, pub seg_fs: u16, pub seg_gs: u16, pub seg_ss: u16,
+        pub eflags: u32,
+        pub dr0: u64, pub dr1: u64, pub dr2: u64, pub dr3: u64, pub dr6: u64, pub dr7: u64,
+        pub rax: u64, pub rcx: u64, pub rdx: u64, pub rbx: u64, pub rsp: u64, pub rbp: u64,
+        pub rsi: u64, pub rdi: u64, pub r8: u64, pub r9: u64, pub r10: u64, pub r11: u64,
+        pub r12: u64, pub r13: u64, pub r14: u64, pub r15: u64, pub rip: u64,
+        pub flt_save: [u8; 512],
+        pub vector_register: [u8; 416],
+        pub vector_control: u64,
+        pub debug_control: u64, pub last_branch_to_rip: u64, pub last_branch_from_rip: u64,
+        pub last_exception_to_rip: u64, pub last_exception_from_rip: u64,
+    }
+
+    extern "system" {
+        fn GetThreadContext(hthread: HANDLE, lpcontext: *mut CONTEXT64) -> i32;
+    }
+
+    const CONTEXT_AMD64: u32 = 0x00100000;
+    const CONTEXT_ALL_AMD64: u32 = CONTEXT_AMD64 | 0x1F;
+
+    static DEBUG_STATE: std::sync::LazyLock<Mutex<DebugState>> = std::sync::LazyLock::new(|| Mutex::new(DebugState::default()));
+
+    #[derive(Default)]
+    pub struct DebugState {
+        pub attached_pid: Option<u32>,
+        pub breakpoints: HashMap<u64, u8>,
+    }
+
+    #[derive(Serialize)]
+    pub struct RegisterSet {
+        pub rax: String, pub rbx: String, pub rcx: String, pub rdx: String,
+        pub rsi: String, pub rdi: String, pub rsp: String, pub rbp: String,
+        pub rip: String, pub r8: String, pub r9: String, pub r10: String,
+        pub r11: String, pub r12: String, pub r13: String, pub r14: String,
+        pub r15: String, pub eflags: String,
+    }
+
+    pub fn attach_debugger(pid: u32) -> Result<String, String> {
+        unsafe {
+            DebugActiveProcess(pid)
+                .map_err(|e| format!("DebugActiveProcess failed (PID {}): {}. Run as Administrator.", pid, e))?;
+        }
+        let mut state = DEBUG_STATE.lock().unwrap();
+        state.attached_pid = Some(pid);
+        Ok(format!("Attached to PID {}", pid))
+    }
+
+    pub fn detach_debugger() -> Result<String, String> {
+        let mut state = DEBUG_STATE.lock().unwrap();
+        if let Some(pid) = state.attached_pid {
+            unsafe { let _ = DebugActiveProcessStop(pid); }
+            state.attached_pid = None;
+            state.breakpoints.clear();
+            Ok(format!("Detached from PID {}", pid))
+        } else {
+            Err("Not attached to any process".into())
+        }
+    }
+
+    pub fn set_breakpoint(addr: u64) -> Result<String, String> {
+        let mut state = DEBUG_STATE.lock().unwrap();
+        let pid = state.attached_pid.ok_or("Not attached to any process")?;
+
+        let orig_bytes = super::memory_api::read_process_mem(pid, addr, 1)
+            .map_err(|e| format!("Read failed: {}", e))?;
+        if orig_bytes.is_empty() { return Err("Could not read byte at address".into()); }
+
+        unsafe {
+            let handle = OpenProcess(PROCESS_VM_WRITE | PROCESS_VM_OPERATION, false, pid)
+                .map_err(|e| format!("OpenProcess: {}", e))?;
+            let int3: u8 = 0xCC;
+            let mut written = 0usize;
+            WriteProcessMemory(
+                handle,
+                addr as *const std::ffi::c_void,
+                &int3 as *const u8 as *const std::ffi::c_void,
+                1,
+                Some(&mut written),
+            ).map_err(|e| format!("WriteProcessMemory: {}", e))?;
+            let _ = CloseHandle(handle);
+        }
+
+        state.breakpoints.insert(addr, orig_bytes[0]);
+        Ok(format!("Breakpoint set at 0x{:X}", addr))
+    }
+
+    pub fn get_registers(tid: u32) -> Result<RegisterSet, String> {
+        unsafe {
+            let handle = OpenThread(THREAD_GET_CONTEXT | THREAD_SUSPEND_RESUME, false, tid)
+                .map_err(|e| format!("OpenThread: {}", e))?;
+
+            SuspendThread(handle);
+
+            let mut ctx: CONTEXT64 = std::mem::zeroed();
+            ctx.context_flags = CONTEXT_ALL_AMD64;
+            let result = GetThreadContext(handle, &mut ctx);
+
+            ResumeThread(handle);
+            let _ = CloseHandle(handle);
+
+            if result == 0 {
+                return Err(format!("GetThreadContext failed: error {}", std::io::Error::last_os_error()));
+            }
+
+            Ok(RegisterSet {
+                rax: format!("0x{:016X}", ctx.rax),
+                rbx: format!("0x{:016X}", ctx.rbx),
+                rcx: format!("0x{:016X}", ctx.rcx),
+                rdx: format!("0x{:016X}", ctx.rdx),
+                rsi: format!("0x{:016X}", ctx.rsi),
+                rdi: format!("0x{:016X}", ctx.rdi),
+                rsp: format!("0x{:016X}", ctx.rsp),
+                rbp: format!("0x{:016X}", ctx.rbp),
+                rip: format!("0x{:016X}", ctx.rip),
+                r8:  format!("0x{:016X}", ctx.r8),
+                r9:  format!("0x{:016X}", ctx.r9),
+                r10: format!("0x{:016X}", ctx.r10),
+                r11: format!("0x{:016X}", ctx.r11),
+                r12: format!("0x{:016X}", ctx.r12),
+                r13: format!("0x{:016X}", ctx.r13),
+                r14: format!("0x{:016X}", ctx.r14),
+                r15: format!("0x{:016X}", ctx.r15),
+                eflags: format!("0x{:08X}", ctx.eflags),
+            })
+        }
+    }
+
+    pub fn continue_execution() -> Result<String, String> {
+        let state = DEBUG_STATE.lock().unwrap();
+        let pid = state.attached_pid.ok_or("Not attached")?;
+        unsafe {
+            ContinueDebugEvent(pid, 0, DBG_CONTINUE)
+                .map_err(|e| format!("ContinueDebugEvent: {}", e))?;
+        }
+        Ok("Continued".into())
+    }
+}
+
+#[tauri::command]
+fn attach_debugger(pid: u32) -> Result<String, String> {
+    #[cfg(target_os = "windows")]
+    { debugger_api::attach_debugger(pid) }
+    #[cfg(not(target_os = "windows"))]
+    { Err("Debugger only supported on Windows".into()) }
+}
+
+#[tauri::command]
+fn detach_debugger() -> Result<String, String> {
+    #[cfg(target_os = "windows")]
+    { debugger_api::detach_debugger() }
+    #[cfg(not(target_os = "windows"))]
+    { Err("Debugger only supported on Windows".into()) }
+}
+
+#[tauri::command]
+fn set_breakpoint(address: String) -> Result<String, String> {
+    let addr = if address.starts_with("0x") || address.starts_with("0X") {
+        u64::from_str_radix(&address[2..], 16).map_err(|_| "Invalid address")?
+    } else {
+        address.parse::<u64>().map_err(|_| "Invalid address")?
+    };
+    #[cfg(target_os = "windows")]
+    { debugger_api::set_breakpoint(addr) }
+    #[cfg(not(target_os = "windows"))]
+    { Err("Debugger only supported on Windows".into()) }
+}
+
+#[tauri::command]
+fn get_registers(thread_id: u32) -> Result<serde_json::Value, String> {
+    #[cfg(target_os = "windows")]
+    {
+        let regs = debugger_api::get_registers(thread_id)?;
+        Ok(serde_json::to_value(regs).unwrap())
+    }
+    #[cfg(not(target_os = "windows"))]
+    { Err("Debugger only supported on Windows".into()) }
+}
+
+#[tauri::command]
+fn continue_execution() -> Result<String, String> {
+    #[cfg(target_os = "windows")]
+    { debugger_api::continue_execution() }
+    #[cfg(not(target_os = "windows"))]
+    { Err("Debugger only supported on Windows".into()) }
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// FAZ 8.4 — Disassemble from attached process memory
+// ══════════════════════════════════════════════════════════════════════
+
+#[tauri::command]
+fn disassemble_memory(pid: u32, address: String, size: usize) -> Result<serde_json::Value, String> {
+    let addr = if address.starts_with("0x") || address.starts_with("0X") {
+        u64::from_str_radix(&address[2..], 16).map_err(|_| "Invalid address")?
+    } else {
+        address.parse::<u64>().map_err(|_| "Invalid address")?
+    };
+    let read_size = size.min(4096);
+
+    #[cfg(target_os = "windows")]
+    {
+        let bytes = memory_api::read_process_mem(pid, addr, read_size)?;
+        use capstone::prelude::*;
+        let cs = Capstone::new()
+            .x86()
+            .mode(capstone::arch::x86::ArchMode::Mode64)
+            .syntax(capstone::arch::x86::ArchSyntax::Intel)
+            .detail(true)
+            .build()
+            .map_err(|e| format!("Capstone init: {}", e))?;
+
+        let insns = cs.disasm_all(&bytes, addr)
+            .map_err(|e| format!("Disassembly failed: {}", e))?;
+
+        let instructions: Vec<serde_json::Value> = insns.iter().map(|ins| {
+            let ins_bytes: Vec<String> = ins.bytes().iter().map(|b| format!("{:02X}", b)).collect();
+            serde_json::json!({
+                "addr": format!("0x{:016X}", ins.address()),
+                "addr_val": ins.address(),
+                "offset": ins.address() - addr,
+                "bytes": ins_bytes.join(" "),
+                "mnemonic": ins.mnemonic().unwrap_or("???"),
+                "operands": ins.op_str().unwrap_or(""),
+            })
+        }).collect();
+
+        Ok(serde_json::json!({
+            "pid": pid,
+            "base_addr": format!("0x{:016X}", addr),
+            "instructions": instructions,
+            "bytes_read": bytes.len(),
+        }))
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        Err("Memory disassembly only supported on Windows".into())
+    }
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// FAZ 8.5 — Simple CPU Emulation (pure Rust, no external deps)
+// ══════════════════════════════════════════════════════════════════════
+
+#[tauri::command]
+fn emulate_function(hex_bytes: String, arch: String, start_addr: u64, max_steps: Option<u64>) -> Result<serde_json::Value, String> {
+    use capstone::prelude::*;
+
+    let bytes: Vec<u8> = (0..hex_bytes.len()/2)
+        .map(|i| u8::from_str_radix(&hex_bytes[i*2..i*2+2], 16))
+        .collect::<Result<Vec<_>,_>>()
+        .map_err(|_| "Invalid hex bytes")?;
+
+    let is_64 = arch == "x64";
+    let steps = max_steps.unwrap_or(200).min(2000) as usize;
+
+    let cs = Capstone::new()
+        .x86()
+        .mode(if is_64 { capstone::arch::x86::ArchMode::Mode64 } else { capstone::arch::x86::ArchMode::Mode32 })
+        .syntax(capstone::arch::x86::ArchSyntax::Intel)
+        .detail(true)
+        .build()
+        .map_err(|e| format!("Capstone: {}", e))?;
+
+    let insns = cs.disasm_all(&bytes, start_addr)
+        .map_err(|e| format!("Disassembly: {}", e))?;
+
+    // Simple register model
+    let mut regs: std::collections::HashMap<String, u64> = std::collections::HashMap::new();
+    if is_64 {
+        for r in ["rax","rbx","rcx","rdx","rsi","rdi","rbp","rsp","r8","r9","r10","r11","r12","r13","r14","r15","rip"] {
+            regs.insert(r.into(), 0);
+        }
+        regs.insert("rsp".into(), 0x7FFFFFFFE000);
+        regs.insert("rip".into(), start_addr);
+    } else {
+        for r in ["eax","ebx","ecx","edx","esi","edi","ebp","esp","eip"] { regs.insert(r.into(), 0); }
+        regs.insert("esp".into(), 0x0019FF80);
+        regs.insert("eip".into(), start_addr as u64);
+    }
+    regs.insert("zf".into(), 0);
+    regs.insert("cf".into(), 0);
+
+    // Memory (sparse)
+    let mut mem: std::collections::HashMap<u64, u8> = std::collections::HashMap::new();
+    for (i, &b) in bytes.iter().enumerate() { mem.insert(start_addr + i as u64, b); }
+
+    let ip_reg = if is_64 { "rip" } else { "eip" };
+    let sp_reg = if is_64 { "rsp" } else { "esp" };
+    let mut trace = Vec::new();
+
+    // Build address-to-instruction lookup
+    let ins_vec: Vec<(u64, String, String, usize)> = insns.iter().map(|i| {
+        (i.address(), i.mnemonic().unwrap_or("").to_string(), i.op_str().unwrap_or("").to_string(), i.len())
+    }).collect();
+    let addr_to_idx: std::collections::HashMap<u64, usize> = ins_vec.iter().enumerate().map(|(i, (a,_,_,_))| (*a, i)).collect();
+
+    for step_n in 0..steps {
+        let ip = *regs.get(ip_reg).unwrap();
+        let idx = match addr_to_idx.get(&ip) { Some(&i) => i, None => break };
+        let (addr, ref mn, ref ops, sz) = ins_vec[idx];
+
+        // Simple interpreter for common instructions
+        let mut next_ip = addr + sz as u64;
+        let parts: Vec<&str> = ops.split(',').map(|s| s.trim()).collect();
+
+        fn get_val(regs: &std::collections::HashMap<String, u64>, s: &str) -> Option<u64> {
+            let s = s.trim();
+            if let Some(v) = regs.get(s) { return Some(*v); }
+            if s.starts_with("0x") { return u64::from_str_radix(&s[2..], 16).ok(); }
+            s.parse::<u64>().ok()
+        }
+
+        match mn.as_str() {
+            "mov" if parts.len() == 2 => {
+                if let Some(v) = get_val(&regs, parts[1]) {
+                    regs.insert(parts[0].to_string(), v);
+                }
+            }
+            "xor" if parts.len() == 2 && parts[0] == parts[1] => {
+                regs.insert(parts[0].to_string(), 0);
+                regs.insert("zf".into(), 1);
+            }
+            "xor" if parts.len() == 2 => {
+                let a = get_val(&regs, parts[0]).unwrap_or(0);
+                let b = get_val(&regs, parts[1]).unwrap_or(0);
+                let r = a ^ b;
+                regs.insert(parts[0].to_string(), r);
+                regs.insert("zf".into(), if r == 0 { 1 } else { 0 });
+            }
+            "add" if parts.len() == 2 => {
+                let a = get_val(&regs, parts[0]).unwrap_or(0);
+                let b = get_val(&regs, parts[1]).unwrap_or(0);
+                regs.insert(parts[0].to_string(), a.wrapping_add(b));
+            }
+            "sub" if parts.len() == 2 => {
+                let a = get_val(&regs, parts[0]).unwrap_or(0);
+                let b = get_val(&regs, parts[1]).unwrap_or(0);
+                regs.insert(parts[0].to_string(), a.wrapping_sub(b));
+                regs.insert("zf".into(), if a == b { 1 } else { 0 });
+                regs.insert("cf".into(), if a < b { 1 } else { 0 });
+            }
+            "inc" if parts.len() >= 1 => {
+                let v = get_val(&regs, parts[0]).unwrap_or(0);
+                regs.insert(parts[0].to_string(), v.wrapping_add(1));
+            }
+            "dec" if parts.len() >= 1 => {
+                let v = get_val(&regs, parts[0]).unwrap_or(0);
+                regs.insert(parts[0].to_string(), v.wrapping_sub(1));
+            }
+            "push" if parts.len() >= 1 => {
+                let v = get_val(&regs, parts[0]).unwrap_or(0);
+                let sp = regs.get(sp_reg).copied().unwrap_or(0);
+                let new_sp = sp.wrapping_sub(if is_64 { 8 } else { 4 });
+                regs.insert(sp_reg.into(), new_sp);
+                for i in 0..(if is_64 { 8 } else { 4 }) {
+                    mem.insert(new_sp + i as u64, ((v >> (i*8)) & 0xFF) as u8);
+                }
+            }
+            "pop" if parts.len() >= 1 => {
+                let sp = regs.get(sp_reg).copied().unwrap_or(0);
+                let w = if is_64 { 8 } else { 4 };
+                let mut v: u64 = 0;
+                for i in 0..w { v |= (*mem.get(&(sp + i as u64)).unwrap_or(&0) as u64) << (i*8); }
+                regs.insert(parts[0].to_string(), v);
+                regs.insert(sp_reg.into(), sp.wrapping_add(w as u64));
+            }
+            "cmp" if parts.len() == 2 => {
+                let a = get_val(&regs, parts[0]).unwrap_or(0);
+                let b = get_val(&regs, parts[1]).unwrap_or(0);
+                regs.insert("zf".into(), if a == b { 1 } else { 0 });
+                regs.insert("cf".into(), if a < b { 1 } else { 0 });
+            }
+            "test" if parts.len() == 2 => {
+                let a = get_val(&regs, parts[0]).unwrap_or(0);
+                let b = get_val(&regs, parts[1]).unwrap_or(0);
+                regs.insert("zf".into(), if (a & b) == 0 { 1 } else { 0 });
+            }
+            "jmp" if parts.len() >= 1 => {
+                if let Some(target) = get_val(&regs, parts[0]) { next_ip = target; }
+            }
+            "je" | "jz" if parts.len() >= 1 => {
+                if *regs.get("zf").unwrap_or(&0) == 1 {
+                    if let Some(t) = get_val(&regs, parts[0]) { next_ip = t; }
+                }
+            }
+            "jne" | "jnz" if parts.len() >= 1 => {
+                if *regs.get("zf").unwrap_or(&0) == 0 {
+                    if let Some(t) = get_val(&regs, parts[0]) { next_ip = t; }
+                }
+            }
+            "nop" => {}
+            "ret" => break,
+            _ => {} // unhandled instruction — skip
+        }
+
+        regs.insert(ip_reg.into(), next_ip);
+
+        // Record trace
+        if is_64 {
+            trace.push(serde_json::json!({
+                "step": step_n, "addr": format!("0x{:X}", addr),
+                "inst": format!("{} {}", mn, ops),
+                "rip": format!("0x{:016X}", next_ip),
+                "rax": format!("0x{:016X}", regs.get("rax").copied().unwrap_or(0)),
+                "rcx": format!("0x{:016X}", regs.get("rcx").copied().unwrap_or(0)),
+                "rdx": format!("0x{:016X}", regs.get("rdx").copied().unwrap_or(0)),
+                "rsp": format!("0x{:016X}", regs.get("rsp").copied().unwrap_or(0)),
+            }));
+        } else {
+            trace.push(serde_json::json!({
+                "step": step_n, "addr": format!("0x{:X}", addr),
+                "inst": format!("{} {}", mn, ops),
+                "eip": format!("0x{:08X}", next_ip),
+                "eax": format!("0x{:08X}", regs.get("eax").copied().unwrap_or(0)),
+                "ecx": format!("0x{:08X}", regs.get("ecx").copied().unwrap_or(0)),
+                "edx": format!("0x{:08X}", regs.get("edx").copied().unwrap_or(0)),
+                "esp": format!("0x{:08X}", regs.get("esp").copied().unwrap_or(0)),
+            }));
+        }
+    }
+
+    Ok(serde_json::json!({
+        "arch": arch,
+        "start_addr": format!("0x{:X}", start_addr),
+        "steps": trace.len(),
+        "trace": trace,
+    }))
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// FAZ 8.6 — Network Capture (per-process connections)
+// ══════════════════════════════════════════════════════════════════════
+
+#[tauri::command]
+fn get_process_connections(pid: u32) -> Result<Vec<serde_json::Value>, String> {
+    #[cfg(target_os = "windows")]
+    {
+        // Use netstat-style approach via IP Helper API
+        // Fallback to command-line netstat for reliability
+        let output = std::process::Command::new("netstat")
+            .args(["-ano", "-p", "TCP"])
+            .output()
+            .map_err(|e| format!("netstat failed: {}", e))?;
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let mut conns = Vec::new();
+
+        for line in stdout.lines().skip(4) {
+            let parts: Vec<&str> = line.split_whitespace().collect();
+            if parts.len() >= 5 {
+                let line_pid: u32 = parts[4].parse().unwrap_or(0);
+                if pid == 0 || line_pid == pid {
+                    conns.push(serde_json::json!({
+                        "protocol": parts[0],
+                        "local_addr": parts[1],
+                        "remote_addr": parts[2],
+                        "state": parts[3],
+                        "pid": line_pid,
+                    }));
+                }
+            }
+        }
+
+        // Also get UDP
+        let output_udp = std::process::Command::new("netstat")
+            .args(["-ano", "-p", "UDP"])
+            .output()
+            .map_err(|e| format!("netstat UDP failed: {}", e))?;
+
+        let stdout_udp = String::from_utf8_lossy(&output_udp.stdout);
+        for line in stdout_udp.lines().skip(4) {
+            let parts: Vec<&str> = line.split_whitespace().collect();
+            if parts.len() >= 4 {
+                let line_pid: u32 = parts.last().and_then(|s| s.parse().ok()).unwrap_or(0);
+                if pid == 0 || line_pid == pid {
+                    conns.push(serde_json::json!({
+                        "protocol": "UDP",
+                        "local_addr": parts[1],
+                        "remote_addr": parts.get(2).unwrap_or(&"*:*"),
+                        "state": "-",
+                        "pid": line_pid,
+                    }));
+                }
+            }
+        }
+
+        Ok(conns)
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        Err("Network capture only supported on Windows".into())
+    }
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// FAZ 10 — Collaborative & Cloud
+// ══════════════════════════════════════════════════════════════════════
+
+// 10.3 — Cloud YARA / IOC Feed
+#[tauri::command]
+async fn fetch_yara_rules(source: String) -> Result<serde_json::Value, String> {
+    // Fetch community YARA rules from known sources
+    let url = match source.as_str() {
+        "abuse_ch" => "https://yaraify-api.abuse.ch/api/v1/",
+        "yara_rules_repo" => "https://raw.githubusercontent.com/Yara-Rules/rules/master/index.yar",
+        _ => return Err("Unknown YARA source".into()),
+    };
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(15))
+        .build()
+        .map_err(|e| e.to_string())?;
+
+    if source == "abuse_ch" {
+        let resp = client.post(url)
+            .form(&[("query", "get_rules"), ("search_term", "")])
+            .send().await.map_err(|e| e.to_string())?;
+        let body: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
+        Ok(body)
+    } else {
+        let resp = client.get(url).send().await.map_err(|e| e.to_string())?;
+        let text = resp.text().await.map_err(|e| e.to_string())?;
+        Ok(serde_json::json!({ "rules": text, "source": source }))
+    }
+}
+
+// 10.3 — Fetch IOC feeds
+#[tauri::command]
+async fn fetch_ioc_feed(feed_type: String) -> Result<serde_json::Value, String> {
+    let url = match feed_type.as_str() {
+        "malware_bazaar" => "https://mb-api.abuse.ch/api/v1/",
+        "urlhaus" => "https://urlhaus-api.abuse.ch/v1/urls/recent/",
+        "threatfox" => "https://threatfox-api.abuse.ch/api/v1/",
+        _ => return Err("Unknown IOC feed".into()),
+    };
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(15))
+        .build()
+        .map_err(|e| e.to_string())?;
+
+    if feed_type == "malware_bazaar" {
+        let resp = client.post(url)
+            .form(&[("query", "get_recent"), ("selector", "100")])
+            .send().await.map_err(|e| e.to_string())?;
+        let body: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
+        Ok(body)
+    } else if feed_type == "threatfox" {
+        let resp = client.post(url)
+            .json(&serde_json::json!({"query": "get_iocs", "days": 1}))
+            .send().await.map_err(|e| e.to_string())?;
+        let body: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
+        Ok(body)
+    } else {
+        let resp = client.get(url).send().await.map_err(|e| e.to_string())?;
+        let body: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
+        Ok(body)
+    }
+}
+
+// 10.4 — Remote AI Backend (OpenAI / Anthropic / Groq compatible)
+#[tauri::command]
+async fn cloud_ai_chat(
+    messages: Vec<serde_json::Value>,
+    model: String,
+    provider: String,
+    api_key: String,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    let (url, auth_header, body) = match provider.as_str() {
+        "openai" => {
+            let url = "https://api.openai.com/v1/chat/completions";
+            let body = serde_json::json!({
+                "model": model,
+                "messages": messages,
+                "stream": true,
+                "max_tokens": 4096,
+            });
+            (url.to_string(), format!("Bearer {}", api_key), body)
+        },
+        "anthropic" => {
+            let url = "https://api.anthropic.com/v1/messages";
+            // Convert messages format for Anthropic
+            let system_msg = messages.iter()
+                .find(|m| m["role"] == "system")
+                .and_then(|m| m["content"].as_str())
+                .unwrap_or("");
+            let conv_msgs: Vec<serde_json::Value> = messages.iter()
+                .filter(|m| m["role"] != "system")
+                .cloned().collect();
+            let body = serde_json::json!({
+                "model": model,
+                "system": system_msg,
+                "messages": conv_msgs,
+                "stream": true,
+                "max_tokens": 4096,
+            });
+            (url.to_string(), api_key.clone(), body)
+        },
+        "groq" => {
+            let url = "https://api.groq.com/openai/v1/chat/completions";
+            let body = serde_json::json!({
+                "model": model,
+                "messages": messages,
+                "stream": true,
+                "max_tokens": 4096,
+            });
+            (url.to_string(), format!("Bearer {}", api_key), body)
+        },
+        _ => return Err(format!("Unknown provider: {}", provider)),
+    };
+
+    let client = reqwest::Client::new();
+    let mut req = client.post(&url)
+        .header("Content-Type", "application/json")
+        .body(body.to_string());
+
+    if provider == "anthropic" {
+        req = req.header("x-api-key", &api_key)
+            .header("anthropic-version", "2023-06-01");
+    } else {
+        req = req.header("Authorization", &auth_header);
+    }
+
+    let resp = req.send().await.map_err(|e| e.to_string())?;
+    let mut stream = resp.bytes_stream();
+    use futures_util::StreamExt;
+    let mut buf = String::new();
+
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|e| e.to_string())?;
+        buf.push_str(&String::from_utf8_lossy(&chunk));
+
+        while let Some(pos) = buf.find('\n') {
+            let line = buf[..pos].to_string();
+            buf = buf[pos + 1..].to_string();
+            let line = line.trim();
+            if line.is_empty() || line == "data: [DONE]" { continue; }
+            if let Some(data) = line.strip_prefix("data: ") {
+                if let Ok(json) = serde_json::from_str::<serde_json::Value>(data) {
+                    // OpenAI / Groq format
+                    if let Some(delta) = json["choices"][0]["delta"]["content"].as_str() {
+                        let _ = app.emit("chat-chunk", delta);
+                    }
+                    // Anthropic format
+                    if let Some(text) = json["delta"]["text"].as_str() {
+                        let _ = app.emit("chat-chunk", text);
+                    }
+                }
+            }
+        }
+    }
+    let _ = app.emit("chat-done", "");
+    Ok(())
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// FAZ 11 — İLERİ BINARY ANALİZ
+// ══════════════════════════════════════════════════════════════════════
+
+// 11.1 — Simplified Symbolic Execution (path constraint tracking)
+#[tauri::command]
+fn symbolic_execute(hex_bytes: String, arch: String, start_addr: u64, max_steps: usize) -> Result<serde_json::Value, String> {
+    use capstone::prelude::*;
+    let bytes = hex::decode(&hex_bytes).map_err(|e| format!("{}", e))?;
+    let cs = Capstone::new()
+        .x86()
+        .mode(if arch == "x64" { capstone::arch::x86::ArchMode::Mode64 } else { capstone::arch::x86::ArchMode::Mode32 })
+        .syntax(capstone::arch::x86::ArchSyntax::Intel)
+        .build()
+        .map_err(|e| format!("Capstone: {}", e))?;
+    let insns = cs.disasm_all(&bytes, start_addr).map_err(|e| format!("{}", e))?;
+
+    let mut paths: Vec<serde_json::Value> = Vec::new();
+    let mut constraints: Vec<String> = Vec::new();
+    let mut path_addrs: Vec<u64> = Vec::new();
+    let mut branch_count = 0u32;
+
+    for (i, insn) in insns.as_ref().iter().enumerate() {
+        if i >= max_steps { break; }
+        let mnemonic = insn.mnemonic().unwrap_or("");
+        let operands = insn.op_str().unwrap_or("");
+        path_addrs.push(insn.address());
+
+        match mnemonic {
+            "je" | "jz" => {
+                constraints.push(format!("ZF == 1 @ 0x{:x}", insn.address()));
+                branch_count += 1;
+                // Record both paths
+                paths.push(serde_json::json!({
+                    "branch_addr": format!("0x{:x}", insn.address()),
+                    "type": "conditional",
+                    "condition": "ZF == 1 (equal/zero)",
+                    "target": operands,
+                    "constraint": constraints.last(),
+                }));
+            },
+            "jne" | "jnz" => {
+                constraints.push(format!("ZF == 0 @ 0x{:x}", insn.address()));
+                branch_count += 1;
+                paths.push(serde_json::json!({
+                    "branch_addr": format!("0x{:x}", insn.address()),
+                    "type": "conditional",
+                    "condition": "ZF == 0 (not equal/not zero)",
+                    "target": operands,
+                    "constraint": constraints.last(),
+                }));
+            },
+            "jg" | "jnle" => {
+                constraints.push(format!("ZF==0 && SF==OF @ 0x{:x}", insn.address()));
+                branch_count += 1;
+                paths.push(serde_json::json!({ "branch_addr": format!("0x{:x}", insn.address()), "type": "conditional", "condition": "greater", "target": operands }));
+            },
+            "jl" | "jnge" => {
+                constraints.push(format!("SF!=OF @ 0x{:x}", insn.address()));
+                branch_count += 1;
+                paths.push(serde_json::json!({ "branch_addr": format!("0x{:x}", insn.address()), "type": "conditional", "condition": "less", "target": operands }));
+            },
+            "cmp" => {
+                constraints.push(format!("cmp {} @ 0x{:x}", operands, insn.address()));
+            },
+            "test" => {
+                constraints.push(format!("test {} @ 0x{:x}", operands, insn.address()));
+            },
+            "call" => {
+                paths.push(serde_json::json!({
+                    "branch_addr": format!("0x{:x}", insn.address()),
+                    "type": "call",
+                    "target": operands,
+                }));
+            },
+            "ret" => {
+                paths.push(serde_json::json!({
+                    "branch_addr": format!("0x{:x}", insn.address()),
+                    "type": "return",
+                }));
+                break;
+            },
+            _ => {}
+        }
+    }
+
+    Ok(serde_json::json!({
+        "paths": paths,
+        "constraints": constraints,
+        "path_addresses": path_addrs.iter().map(|a| format!("0x{:x}", a)).collect::<Vec<_>>(),
+        "total_instructions": insns.as_ref().len(),
+        "branch_count": branch_count,
+        "arch": arch,
+    }))
+}
+
+// 11.2 — Taint Analysis (track data flow through registers)
+#[tauri::command]
+fn taint_analysis(hex_bytes: String, arch: String, start_addr: u64, taint_sources: Vec<String>) -> Result<serde_json::Value, String> {
+    use capstone::prelude::*;
+    let bytes = hex::decode(&hex_bytes).map_err(|e| format!("{}", e))?;
+    let cs = Capstone::new()
+        .x86()
+        .mode(if arch == "x64" { capstone::arch::x86::ArchMode::Mode64 } else { capstone::arch::x86::ArchMode::Mode32 })
+        .syntax(capstone::arch::x86::ArchSyntax::Intel)
+        .build()
+        .map_err(|e| format!("Capstone: {}", e))?;
+    let insns = cs.disasm_all(&bytes, start_addr).map_err(|e| format!("{}", e))?;
+
+    // Track which registers are tainted
+    let mut tainted: std::collections::HashSet<String> = taint_sources.into_iter().collect();
+    let mut taint_log: Vec<serde_json::Value> = Vec::new();
+    let mut dangerous_sinks: Vec<serde_json::Value> = Vec::new();
+
+    for insn in insns.as_ref().iter() {
+        let mnemonic = insn.mnemonic().unwrap_or("");
+        let operands = insn.op_str().unwrap_or("");
+        let parts: Vec<&str> = operands.split(',').map(|s| s.trim()).collect();
+
+        match mnemonic {
+            "mov" | "movzx" | "movsx" | "lea" if parts.len() == 2 => {
+                let dst = parts[0].to_lowercase();
+                let src = parts[1].to_lowercase();
+                // If source is tainted, destination becomes tainted
+                let src_tainted = tainted.iter().any(|t| src.contains(&t.to_lowercase()));
+                if src_tainted {
+                    tainted.insert(dst.clone());
+                    taint_log.push(serde_json::json!({
+                        "addr": format!("0x{:x}", insn.address()),
+                        "inst": format!("{} {}", mnemonic, operands),
+                        "action": "propagate",
+                        "from": src, "to": dst,
+                        "tainted_regs": tainted.iter().cloned().collect::<Vec<_>>(),
+                    }));
+                } else if tainted.contains(&dst) {
+                    // Overwritten with clean value
+                    tainted.remove(&dst);
+                    taint_log.push(serde_json::json!({
+                        "addr": format!("0x{:x}", insn.address()),
+                        "inst": format!("{} {}", mnemonic, operands),
+                        "action": "clean",
+                        "register": dst,
+                    }));
+                }
+            },
+            "xor" if parts.len() == 2 && parts[0] == parts[1] => {
+                let reg = parts[0].to_lowercase();
+                tainted.remove(&reg);
+            },
+            "add" | "sub" | "xor" | "or" | "and" if parts.len() == 2 => {
+                let dst = parts[0].to_lowercase();
+                let src = parts[1].to_lowercase();
+                if tainted.iter().any(|t| src.contains(&t.to_lowercase())) {
+                    tainted.insert(dst.clone());
+                    taint_log.push(serde_json::json!({
+                        "addr": format!("0x{:x}", insn.address()),
+                        "inst": format!("{} {}", mnemonic, operands),
+                        "action": "propagate_arith",
+                        "tainted_regs": tainted.iter().cloned().collect::<Vec<_>>(),
+                    }));
+                }
+            },
+            "push" if parts.len() == 1 => {
+                let src = parts[0].to_lowercase();
+                if tainted.iter().any(|t| src.contains(&t.to_lowercase())) {
+                    taint_log.push(serde_json::json!({
+                        "addr": format!("0x{:x}", insn.address()),
+                        "inst": format!("{} {}", mnemonic, operands),
+                        "action": "tainted_push",
+                    }));
+                }
+            },
+            "call" => {
+                // Check if any argument register is tainted
+                let arg_regs = ["rdi", "rsi", "rdx", "rcx", "r8", "r9", "eax", "ecx", "edx"];
+                let tainted_args: Vec<String> = arg_regs.iter()
+                    .filter(|r| tainted.contains(&r.to_string()))
+                    .map(|r| r.to_string()).collect();
+                if !tainted_args.is_empty() {
+                    dangerous_sinks.push(serde_json::json!({
+                        "addr": format!("0x{:x}", insn.address()),
+                        "target": operands,
+                        "tainted_args": tainted_args,
+                        "severity": "high",
+                        "reason": "Tainted data passed to function call",
+                    }));
+                }
+            },
+            "jmp" if parts.len() == 1 => {
+                let target = parts[0].to_lowercase();
+                if tainted.iter().any(|t| target.contains(&t.to_lowercase())) {
+                    dangerous_sinks.push(serde_json::json!({
+                        "addr": format!("0x{:x}", insn.address()),
+                        "target": operands,
+                        "severity": "critical",
+                        "reason": "Tainted data used as jump target (potential RCE)",
+                    }));
+                }
+            },
+            _ => {}
+        }
+    }
+
+    Ok(serde_json::json!({
+        "taint_log": taint_log,
+        "dangerous_sinks": dangerous_sinks,
+        "final_tainted_regs": tainted.into_iter().collect::<Vec<_>>(),
+        "total_instructions": insns.as_ref().len(),
+    }))
+}
+
+// 11.3 — Anti-obfuscation Detection
+#[tauri::command]
+fn detect_obfuscation(hex_bytes: String, arch: String, start_addr: u64) -> Result<serde_json::Value, String> {
+    use capstone::prelude::*;
+    let bytes = hex::decode(&hex_bytes).map_err(|e| format!("{}", e))?;
+    let cs = Capstone::new()
+        .x86()
+        .mode(if arch == "x64" { capstone::arch::x86::ArchMode::Mode64 } else { capstone::arch::x86::ArchMode::Mode32 })
+        .syntax(capstone::arch::x86::ArchSyntax::Intel)
+        .build()
+        .map_err(|e| format!("Capstone: {}", e))?;
+    let insns = cs.disasm_all(&bytes, start_addr).map_err(|e| format!("{}", e))?;
+
+    let mut findings: Vec<serde_json::Value> = Vec::new();
+    let mut nop_count = 0u32;
+    let mut jmp_count = 0u32;
+    let mut indirect_jmp_count = 0u32;
+    let mut xor_string_loops = 0u32;
+    let mut opaque_predicates: Vec<serde_json::Value> = Vec::new();
+    let total = insns.as_ref().len();
+
+    let mut prev_mnemonic = "";
+    let mut prev_operands = "";
+
+    for insn in insns.as_ref().iter() {
+        let mnemonic = insn.mnemonic().unwrap_or("");
+        let operands = insn.op_str().unwrap_or("");
+
+        // Dead code: nop / nop padding
+        if mnemonic == "nop" || (mnemonic == "xchg" && operands.contains("eax") && operands.contains("eax")) {
+            nop_count += 1;
+        }
+
+        // Control flow flattening indicators: excessive unconditional jumps
+        if mnemonic == "jmp" {
+            jmp_count += 1;
+            if operands.contains('[') || operands.contains("eax") || operands.contains("rax") {
+                indirect_jmp_count += 1;
+            }
+        }
+
+        // XOR string decryption loop pattern
+        if mnemonic == "xor" && !operands.is_empty() {
+            let parts: Vec<&str> = operands.split(',').map(|s| s.trim()).collect();
+            if parts.len() == 2 && parts[0] != parts[1] && (operands.contains('[') || operands.contains("byte")) {
+                xor_string_loops += 1;
+            }
+        }
+
+        // Opaque predicate detection: cmp followed by always-true/always-false jump
+        if prev_mnemonic == "cmp" {
+            // Pattern: cmp reg, reg followed by je (always true)
+            let prev_parts: Vec<&str> = prev_operands.split(',').map(|s| s.trim()).collect();
+            if prev_parts.len() == 2 && prev_parts[0] == prev_parts[1] && (mnemonic == "je" || mnemonic == "jz") {
+                opaque_predicates.push(serde_json::json!({
+                    "addr": format!("0x{:x}", insn.address()),
+                    "type": "always_true",
+                    "pattern": format!("{} {} ; {}", prev_mnemonic, prev_operands, mnemonic),
+                }));
+            }
+        }
+
+        prev_mnemonic = mnemonic;
+        prev_operands = operands;
+    }
+
+    // Scoring
+    let nop_ratio = if total > 0 { nop_count as f64 / total as f64 } else { 0.0 };
+    let jmp_ratio = if total > 0 { jmp_count as f64 / total as f64 } else { 0.0 };
+
+    if nop_ratio > 0.1 {
+        findings.push(serde_json::json!({ "type": "dead_code", "severity": "medium", "detail": format!("{:.1}% NOP instructions detected ({} / {})", nop_ratio*100.0, nop_count, total) }));
+    }
+    if jmp_ratio > 0.15 {
+        findings.push(serde_json::json!({ "type": "control_flow_flattening", "severity": "high", "detail": format!("{:.1}% unconditional jumps ({} / {})", jmp_ratio*100.0, jmp_count, total) }));
+    }
+    if indirect_jmp_count > 3 {
+        findings.push(serde_json::json!({ "type": "indirect_jumps", "severity": "high", "detail": format!("{} indirect jump instructions (dispatcher pattern)", indirect_jmp_count) }));
+    }
+    if xor_string_loops > 2 {
+        findings.push(serde_json::json!({ "type": "xor_string_encryption", "severity": "medium", "detail": format!("{} XOR byte operations detected (possible string decryption)", xor_string_loops) }));
+    }
+    if !opaque_predicates.is_empty() {
+        findings.push(serde_json::json!({ "type": "opaque_predicates", "severity": "high", "detail": format!("{} opaque predicate patterns detected", opaque_predicates.len()), "locations": opaque_predicates }));
+    }
+
+    let obfuscation_score = (nop_ratio * 20.0 + jmp_ratio * 30.0 + (indirect_jmp_count as f64).min(10.0) * 3.0 + (xor_string_loops as f64).min(10.0) * 2.0 + (opaque_predicates.len() as f64) * 5.0).min(100.0) as u32;
+
+    Ok(serde_json::json!({
+        "obfuscation_score": obfuscation_score,
+        "findings": findings,
+        "stats": {
+            "total_instructions": total,
+            "nop_count": nop_count,
+            "jmp_count": jmp_count,
+            "indirect_jmp_count": indirect_jmp_count,
+            "xor_operations": xor_string_loops,
+            "opaque_predicates": opaque_predicates.len(),
+        },
+    }))
+}
+
+// 11.4 — Shellcode Analysis
+#[tauri::command]
+fn analyze_shellcode(hex_bytes: String, arch: String) -> Result<serde_json::Value, String> {
+    use capstone::prelude::*;
+    let bytes = hex::decode(&hex_bytes).map_err(|e| format!("{}", e))?;
+    let cs = Capstone::new()
+        .x86()
+        .mode(if arch == "x64" { capstone::arch::x86::ArchMode::Mode64 } else { capstone::arch::x86::ArchMode::Mode32 })
+        .syntax(capstone::arch::x86::ArchSyntax::Intel)
+        .build()
+        .map_err(|e| format!("Capstone: {}", e))?;
+    let insns = cs.disasm_all(&bytes, 0).map_err(|e| format!("{}", e))?;
+
+    let mut api_patterns: Vec<serde_json::Value> = Vec::new();
+    let mut peb_access = false;
+    let mut syscall_found = false;
+    let mut position_independent = true;
+    let mut stack_strings: Vec<String> = Vec::new();
+
+    let mut disasm: Vec<serde_json::Value> = Vec::new();
+    let mut push_sequence: Vec<u8> = Vec::new();
+
+    for insn in insns.as_ref().iter() {
+        let mnemonic = insn.mnemonic().unwrap_or("");
+        let operands = insn.op_str().unwrap_or("");
+
+        disasm.push(serde_json::json!({
+            "addr": format!("0x{:x}", insn.address()),
+            "bytes": insn.bytes().iter().map(|b| format!("{:02x}", b)).collect::<String>(),
+            "inst": format!("{} {}", mnemonic, operands),
+        }));
+
+        // PEB/TEB access pattern (fs:[0x30] or gs:[0x60])
+        if operands.contains("fs:") && operands.contains("0x30") {
+            peb_access = true;
+            api_patterns.push(serde_json::json!({ "addr": format!("0x{:x}", insn.address()), "type": "PEB_access", "detail": "Accessing PEB via FS:[0x30] (API resolution)" }));
+        }
+        if operands.contains("gs:") && operands.contains("0x60") {
+            peb_access = true;
+            api_patterns.push(serde_json::json!({ "addr": format!("0x{:x}", insn.address()), "type": "PEB_access_x64", "detail": "Accessing PEB via GS:[0x60] (x64 API resolution)" }));
+        }
+
+        // Syscall instruction
+        if mnemonic == "syscall" || mnemonic == "int" && operands.contains("0x2e") {
+            syscall_found = true;
+            api_patterns.push(serde_json::json!({ "addr": format!("0x{:x}", insn.address()), "type": "syscall", "detail": "Direct syscall detected" }));
+        }
+
+        // Absolute address usage = not position independent
+        if operands.contains("0x0040") || operands.contains("0x0041") {
+            position_independent = false;
+        }
+
+        // Stack string construction (push immediate bytes)
+        if mnemonic == "push" {
+            if let Some(hex_val) = operands.strip_prefix("0x") {
+                if let Ok(val) = u32::from_str_radix(hex_val, 16) {
+                    for b in val.to_le_bytes() {
+                        if b >= 0x20 && b <= 0x7e { push_sequence.push(b); }
+                        else if b == 0 && !push_sequence.is_empty() {
+                            if push_sequence.len() >= 3 {
+                                stack_strings.push(String::from_utf8_lossy(&push_sequence).to_string());
+                            }
+                            push_sequence.clear();
+                        }
+                    }
+                }
+            }
+        } else if !push_sequence.is_empty() && mnemonic != "push" {
+            if push_sequence.len() >= 3 {
+                stack_strings.push(String::from_utf8_lossy(&push_sequence).to_string());
+            }
+            push_sequence.clear();
+        }
+
+        // Known hash values for API resolution (ror13 hash patterns)
+        if mnemonic == "cmp" || mnemonic == "mov" {
+            let known_hashes = [
+                (0x0726774C_u64, "kernel32.dll!LoadLibraryA"),
+                (0xEC0E4E8E, "kernel32.dll!GetProcAddress"),
+                (0x5FC8D902, "kernel32.dll!VirtualAlloc"),
+                (0x876F8B31, "kernel32.dll!WinExec"),
+                (0x56A2B5F0, "kernel32.dll!ExitProcess"),
+                (0xE553A458, "kernel32.dll!VirtualFree"),
+                (0x6174A599, "ws2_32.dll!connect"),
+                (0x006B8029, "ws2_32.dll!WSAStartup"),
+            ];
+            for (hash, name) in &known_hashes {
+                if operands.contains(&format!("0x{:x}", hash)) || operands.contains(&format!("0x{:X}", hash)) {
+                    api_patterns.push(serde_json::json!({ "addr": format!("0x{:x}", insn.address()), "type": "api_hash", "api": name, "hash": format!("0x{:08X}", hash) }));
+                }
+            }
+        }
+    }
+
+    Ok(serde_json::json!({
+        "disassembly": disasm,
+        "size_bytes": bytes.len(),
+        "total_instructions": insns.as_ref().len(),
+        "position_independent": position_independent,
+        "peb_access": peb_access,
+        "syscall_found": syscall_found,
+        "api_patterns": api_patterns,
+        "stack_strings": stack_strings,
+        "arch": arch,
+    }))
+}
+
+// 11.5 — Binary Diff (compare two hex blobs)
+#[tauri::command]
+fn binary_diff(hex_a: String, hex_b: String, arch: String) -> Result<serde_json::Value, String> {
+    use capstone::prelude::*;
+    let bytes_a = hex::decode(&hex_a).map_err(|e| format!("{}", e))?;
+    let bytes_b = hex::decode(&hex_b).map_err(|e| format!("{}", e))?;
+    let cs = Capstone::new()
+        .x86()
+        .mode(if arch == "x64" { capstone::arch::x86::ArchMode::Mode64 } else { capstone::arch::x86::ArchMode::Mode32 })
+        .syntax(capstone::arch::x86::ArchSyntax::Intel)
+        .build()
+        .map_err(|e| format!("Capstone: {}", e))?;
+
+    let insns_a = cs.disasm_all(&bytes_a, 0).map_err(|e| format!("{}", e))?;
+    let insns_b = cs.disasm_all(&bytes_b, 0).map_err(|e| format!("{}", e))?;
+
+    let list_a: Vec<String> = insns_a.as_ref().iter()
+        .map(|i| format!("{} {}", i.mnemonic().unwrap_or(""), i.op_str().unwrap_or("")))
+        .collect();
+    let list_b: Vec<String> = insns_b.as_ref().iter()
+        .map(|i| format!("{} {}", i.mnemonic().unwrap_or(""), i.op_str().unwrap_or("")))
+        .collect();
+
+    let mut diffs: Vec<serde_json::Value> = Vec::new();
+    let max_len = list_a.len().max(list_b.len());
+
+    for i in 0..max_len {
+        let a = list_a.get(i).map(|s| s.as_str()).unwrap_or("<missing>");
+        let b = list_b.get(i).map(|s| s.as_str()).unwrap_or("<missing>");
+        if a != b {
+            diffs.push(serde_json::json!({
+                "index": i,
+                "addr_a": insns_a.as_ref().get(i).map(|x| format!("0x{:x}", x.address())).unwrap_or_default(),
+                "addr_b": insns_b.as_ref().get(i).map(|x| format!("0x{:x}", x.address())).unwrap_or_default(),
+                "inst_a": a,
+                "inst_b": b,
+            }));
+        }
+    }
+
+    // Byte-level diff
+    let mut byte_diffs: Vec<serde_json::Value> = Vec::new();
+    let byte_max = bytes_a.len().max(bytes_b.len());
+    for i in 0..byte_max.min(4096) {
+        let ba = bytes_a.get(i).copied().unwrap_or(0);
+        let bb = bytes_b.get(i).copied().unwrap_or(0);
+        if ba != bb {
+            byte_diffs.push(serde_json::json!({ "offset": i, "byte_a": format!("{:02X}", ba), "byte_b": format!("{:02X}", bb) }));
+        }
+    }
+
+    let similarity = if max_len > 0 { ((max_len - diffs.len()) as f64 / max_len as f64 * 100.0) as u32 } else { 100 };
+
+    Ok(serde_json::json!({
+        "similarity_pct": similarity,
+        "instruction_diffs": diffs,
+        "byte_diffs": byte_diffs,
+        "total_a": list_a.len(),
+        "total_b": list_b.len(),
+        "size_a": bytes_a.len(),
+        "size_b": bytes_b.len(),
+    }))
+}
+
+// 11.6 — Type Recovery (stack frame analysis)
+#[tauri::command]
+fn recover_types(hex_bytes: String, arch: String, start_addr: u64) -> Result<serde_json::Value, String> {
+    use capstone::prelude::*;
+    let bytes = hex::decode(&hex_bytes).map_err(|e| format!("{}", e))?;
+    let cs = Capstone::new()
+        .x86()
+        .mode(if arch == "x64" { capstone::arch::x86::ArchMode::Mode64 } else { capstone::arch::x86::ArchMode::Mode32 })
+        .syntax(capstone::arch::x86::ArchSyntax::Intel)
+        .build()
+        .map_err(|e| format!("Capstone: {}", e))?;
+    let insns = cs.disasm_all(&bytes, start_addr).map_err(|e| format!("{}", e))?;
+
+    let mut stack_vars: Vec<serde_json::Value> = Vec::new();
+    let mut vtable_refs: Vec<serde_json::Value> = Vec::new();
+    let mut frame_size: i64 = 0;
+    let mut known_offsets: std::collections::HashSet<i64> = std::collections::HashSet::new();
+    let ptr_size = if arch == "x64" { 8i64 } else { 4i64 };
+
+    for insn in insns.as_ref().iter() {
+        let mnemonic = insn.mnemonic().unwrap_or("");
+        let operands = insn.op_str().unwrap_or("");
+
+        // Detect frame setup: sub esp/rsp, imm
+        if (mnemonic == "sub") && (operands.starts_with("esp") || operands.starts_with("rsp")) {
+            let parts_vec: Vec<&str> = operands.split(',').collect();
+            if parts_vec.len() == 2 {
+                let val_str = parts_vec[1].trim();
+                if let Some(hex) = val_str.strip_prefix("0x") {
+                    frame_size = i64::from_str_radix(hex, 16).unwrap_or(0);
+                } else if let Ok(v) = val_str.parse::<i64>() {
+                    frame_size = v;
+                }
+            }
+        }
+
+        // Stack variable access patterns: [ebp-XX] or [rbp-XX]
+        let bp_re_patterns = ["ebp - ", "ebp + ", "rbp - ", "rbp + ", "ebp-", "ebp+", "rbp-", "rbp+"];
+        for pat in &bp_re_patterns {
+            if operands.contains(pat) {
+                let is_neg = pat.contains('-');
+                let op_str: &str = operands;
+                if let Some(offset_part) = op_str.split(pat).nth(1) {
+                    let clean: &str = offset_part.split(']').next().unwrap_or("").trim();
+                    let offset_val = if let Some(hex) = clean.strip_prefix("0x") {
+                        i64::from_str_radix(hex, 16).unwrap_or(0)
+                    } else {
+                        clean.parse::<i64>().unwrap_or(0)
+                    };
+                    let actual_offset = if is_neg { -offset_val } else { offset_val };
+                    if actual_offset != 0 && !known_offsets.contains(&actual_offset) {
+                        known_offsets.insert(actual_offset);
+                        let access_size = if operands.contains("dword") { 4 }
+                            else if operands.contains("qword") { 8 }
+                            else if operands.contains("word") { 2 }
+                            else if operands.contains("byte") { 1 }
+                            else { ptr_size };
+                        let inferred_type = match access_size {
+                            1 => "char/uint8_t",
+                            2 => "short/uint16_t",
+                            4 => if operands.contains("xmm") { "float" } else { "int/uint32_t" },
+                            8 => "int64_t/pointer",
+                            _ => "unknown",
+                        };
+                        stack_vars.push(serde_json::json!({
+                            "offset": actual_offset,
+                            "size": access_size,
+                            "inferred_type": inferred_type,
+                            "name": format!("var_{:x}", actual_offset.unsigned_abs()),
+                            "first_access": format!("0x{:x}", insn.address()),
+                        }));
+                    }
+                }
+            }
+        }
+
+        // vtable reference: mov reg, [reg] then call [reg+offset]
+        if mnemonic == "call" && operands.contains('[') && operands.contains('+') {
+            vtable_refs.push(serde_json::json!({
+                "addr": format!("0x{:x}", insn.address()),
+                "instruction": format!("{} {}", mnemonic, operands),
+                "type": "virtual_call",
+            }));
+        }
+    }
+
+    // Sort stack vars by offset
+    stack_vars.sort_by_key(|v| v["offset"].as_i64().unwrap_or(0));
+
+    Ok(serde_json::json!({
+        "frame_size": frame_size,
+        "stack_variables": stack_vars,
+        "vtable_references": vtable_refs,
+        "ptr_size": ptr_size,
+        "arch": arch,
+    }))
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// FAZ 12 — PLATFORM & EKOSİSTEM
+// ══════════════════════════════════════════════════════════════════════
+
+// 12.1 — Platform bilgisi (cross-compile desteği)
+#[tauri::command]
+fn get_platform_info() -> serde_json::Value {
+    serde_json::json!({
+        "os": std::env::consts::OS,
+        "arch": std::env::consts::ARCH,
+        "family": std::env::consts::FAMILY,
+        "exe_suffix": std::env::consts::EXE_SUFFIX,
+        "dll_suffix": std::env::consts::DLL_SUFFIX,
+        "debug_api": if cfg!(target_os = "windows") { "Win32 Debug API" }
+                     else if cfg!(target_os = "linux") { "ptrace" }
+                     else if cfg!(target_os = "macos") { "mach_vm" }
+                     else { "unsupported" },
+        "process_api": if cfg!(target_os = "windows") { "ToolHelp32/NtApi" }
+                       else if cfg!(target_os = "linux") { "/proc/pid" }
+                       else { "sysinfo" },
+        "features": {
+            "debugger": cfg!(target_os = "windows"),
+            "memory_read": cfg!(target_os = "windows"),
+            "network_capture": cfg!(target_os = "windows"),
+            "pe_analysis": true,
+            "disassembly": true,
+            "emulation": true,
+            "ai": true,
+        },
+    })
+}
+
+// 12.2 — CLI tarama (batch analiz)
+#[tauri::command]
+fn cli_scan(file_path: String, output_format: String) -> Result<serde_json::Value, String> {
+    // Read file
+    let data = std::fs::read(&file_path).map_err(|e| format!("Dosya okuma hatası: {}", e))?;
+    let file_name = std::path::Path::new(&file_path)
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| file_path.clone());
+
+    // Basic hashes
+    use sha2::Digest;
+    let sha256 = format!("{:x}", sha2::Sha256::digest(&data));
+    let md5 = format!("{:x}", md5::Md5::digest(&data));
+    let sha1 = format!("{:x}", sha1::Sha1::digest(&data));
+
+    let mut result = serde_json::json!({
+        "file": file_name,
+        "path": file_path,
+        "size": data.len(),
+        "sha256": sha256,
+        "md5": md5,
+        "sha1": sha1,
+        "format": output_format,
+    });
+
+    // Try PE parsing
+    if let Ok(pe) = goblin::pe::PE::parse(&data) {
+        result["pe"] = serde_json::json!({
+            "is_64": pe.is_64,
+            "is_dll": pe.is_lib,
+            "entry_point": format!("0x{:X}", pe.entry),
+            "number_of_sections": pe.sections.len(),
+            "imports_count": pe.imports.len(),
+            "exports_count": pe.exports.len(),
+            "sections": pe.sections.iter().map(|s| {
+                let name = String::from_utf8_lossy(&s.name).trim_end_matches('\0').to_string();
+                serde_json::json!({
+                    "name": name,
+                    "virtual_size": s.virtual_size,
+                    "virtual_address": format!("0x{:X}", s.virtual_address),
+                    "raw_size": s.size_of_raw_data,
+                    "characteristics": format!("0x{:X}", s.characteristics),
+                })
+            }).collect::<Vec<_>>(),
+        });
+    }
+
+    Ok(result)
+}
+
+// 12.3 — Basit script çalıştırma (komut zinciri)
+#[tauri::command]
+fn run_script(commands: Vec<serde_json::Value>) -> Result<Vec<serde_json::Value>, String> {
+    let mut results: Vec<serde_json::Value> = Vec::new();
+    let mut variables: std::collections::HashMap<String, serde_json::Value> = std::collections::HashMap::new();
+
+    for cmd in &commands {
+        let action = cmd["action"].as_str().unwrap_or("");
+        let step_result = match action {
+            "hash" => {
+                let path = cmd["path"].as_str().unwrap_or("");
+                if let Ok(data) = std::fs::read(path) {
+                    use sha2::Digest;
+                    let sha256 = format!("{:x}", sha2::Sha256::digest(&data));
+                    let r = serde_json::json!({ "ok": true, "sha256": sha256, "size": data.len() });
+                    if let Some(var) = cmd["store_as"].as_str() {
+                        variables.insert(var.to_string(), r.clone());
+                    }
+                    r
+                } else {
+                    serde_json::json!({ "ok": false, "error": "Dosya okunamadı" })
+                }
+            },
+            "disassemble" => {
+                let path = cmd["path"].as_str().unwrap_or("");
+                let count = cmd["count"].as_u64().unwrap_or(50) as usize;
+                if let Ok(data) = std::fs::read(path) {
+                    if let Ok(pe) = goblin::pe::PE::parse(&data) {
+                        use capstone::prelude::*;
+                        let mode = if pe.is_64 { capstone::arch::x86::ArchMode::Mode64 } else { capstone::arch::x86::ArchMode::Mode32 };
+                        if let Ok(cs) = Capstone::new().x86().mode(mode).syntax(capstone::arch::x86::ArchSyntax::Intel).build() {
+                            let ep = pe.entry;
+                            let ep_rva = ep as u32;
+                            let mut offset = 0usize;
+                            for s in &pe.sections {
+                                if ep_rva >= s.virtual_address && ep_rva < s.virtual_address + s.virtual_size {
+                                    offset = (ep_rva - s.virtual_address + s.pointer_to_raw_data) as usize;
+                                    break;
+                                }
+                            }
+                            let end = (offset + count * 15).min(data.len());
+                            if let Ok(insns) = cs.disasm_all(&data[offset..end], ep as u64) {
+                                let list: Vec<serde_json::Value> = insns.as_ref().iter().take(count).map(|i| {
+                                    serde_json::json!({ "addr": format!("0x{:x}", i.address()), "inst": format!("{} {}", i.mnemonic().unwrap_or(""), i.op_str().unwrap_or("")) })
+                                }).collect();
+                                let r = serde_json::json!({ "ok": true, "is_64": pe.is_64, "instructions": list });
+                                if let Some(var) = cmd["store_as"].as_str() {
+                                    variables.insert(var.to_string(), r.clone());
+                                }
+                                r
+                            } else { serde_json::json!({ "ok": false, "error": "Disassembly hatası" }) }
+                        } else { serde_json::json!({ "ok": false, "error": "Capstone init hatası" }) }
+                    } else { serde_json::json!({ "ok": false, "error": "PE parse hatası" }) }
+                } else { serde_json::json!({ "ok": false, "error": "Dosya okunamadı" }) }
+            },
+            "set_var" => {
+                let name = cmd["name"].as_str().unwrap_or("_");
+                let value = cmd["value"].clone();
+                variables.insert(name.to_string(), value.clone());
+                serde_json::json!({ "ok": true, "var": name })
+            },
+            "get_var" => {
+                let name = cmd["name"].as_str().unwrap_or("_");
+                variables.get(name).cloned().unwrap_or(serde_json::json!({ "ok": false, "error": "Değişken bulunamadı" }))
+            },
+            "echo" => {
+                let msg = cmd["message"].as_str().unwrap_or("");
+                serde_json::json!({ "ok": true, "message": msg })
+            },
+            _ => serde_json::json!({ "ok": false, "error": format!("Bilinmeyen eylem: {}", action) }),
+        };
+        results.push(serde_json::json!({ "step": results.len(), "action": action, "result": step_result }));
+    }
+    Ok(results)
+}
+
 // ── Entry ─────────────────────────────────────────────────────────────
 
 fn main() {
@@ -2911,6 +4569,33 @@ fn main() {
             fuzzy_compare,
             batch_scan,
             scan_generic,
+            // FAZ 8
+            list_processes,
+            query_memory_regions,
+            read_process_memory,
+            attach_debugger,
+            detach_debugger,
+            set_breakpoint,
+            get_registers,
+            continue_execution,
+            disassemble_memory,
+            emulate_function,
+            get_process_connections,
+            // FAZ 10
+            fetch_yara_rules,
+            fetch_ioc_feed,
+            cloud_ai_chat,
+            // FAZ 11
+            symbolic_execute,
+            taint_analysis,
+            detect_obfuscation,
+            analyze_shellcode,
+            binary_diff,
+            recover_types,
+            // FAZ 12
+            get_platform_info,
+            cli_scan,
+            run_script,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
