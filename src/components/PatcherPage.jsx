@@ -353,7 +353,12 @@ function PatcherPage({ onSendToChat }) {
           <div key={p.id}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
               <div style={{ flex: 1 }}>
-                <PatchCard patch={p} onToggle={() => setPatches(ps => ps.map(x => x.id === p.id ? { ...x, enabled: !x.enabled } : x))} onDelete={() => { setPatches(ps => ps.filter(x => x.id !== p.id)); if (hexData?.patchId === p.id) setHexData(null); }} />
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '6px 10px', borderRadius: 6, border: `1px solid ${p.enabled ? 'rgba(34,197,94,0.2)' : 'rgba(255,255,255,0.06)'}`, background: p.enabled ? 'rgba(34,197,94,0.04)' : 'rgba(255,255,255,0.02)' }}>
+                  <input type="checkbox" checked={p.enabled} onChange={() => setPatches(ps => ps.map(x => x.id === p.id ? { ...x, enabled: !x.enabled } : x))} style={{ accentColor: '#22c55e' }} />
+                  <span style={{ fontSize: 11, color: '#e6edf3', fontFamily: 'monospace', flex: 1 }}>{p.name || `Patch #${p.id}`}</span>
+                  <span style={{ fontSize: 9, color: '#8b949e', fontFamily: 'monospace' }}>{p.offset || ''} → {p.bytes || ''}</span>
+                  <button onClick={() => { setPatches(ps => ps.filter(x => x.id !== p.id)); if (hexData?.patchId === p.id) setHexData(null); }} style={{ fontSize: 9, padding: '1px 6px', borderRadius: 3, border: '1px solid rgba(239,68,68,0.2)', background: 'transparent', color: '#f87171', cursor: 'pointer' }}>✕</button>
+                </div>
               </div>
               {patchFile?.path && (
                 <button onClick={() => loadHex(p)} disabled={hexLoading}

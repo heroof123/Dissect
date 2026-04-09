@@ -1,11 +1,12 @@
-﻿import React, { useState, useEffect } from 'react';
+﻿import React, { useState, useEffect, useMemo } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import {
   Cpu, HardDrive, MemoryStick, Download, RefreshCw, FolderOpen,
-  Search, CheckCircle2, XCircle, Zap, Play, Layers
+  Search, CheckCircle2, XCircle, Zap, Play, Layers, ChevronDown, ChevronRight, AlertCircle, X
 } from 'lucide-react';
 import { Card, CardHeader, Spinner } from './shared';
+import useStore from '../store/useStore';
 
 function SystemPage() {
   const [sysInfo, setSysInfo]     = useState(null);
@@ -23,7 +24,17 @@ function SystemPage() {
   const [hfResults, setHfResults] = useState([]);
   const [hfSearching, setHfSearching] = useState(false);
   const [hfError, setHfError]     = useState('');
-  const [hfExpanded, setHfExpanded] = useState(null); // expanded model id
+  const [hfExpanded, setHfExpanded] = useState(new Set()); // expanded model ids
+  const [scanError, setScanError] = useState('');
+  const [confirmDl, setConfirmDl] = useState(null); // {url, name, model} for confirm dialog
+  const [folderReady, setFolderReady] = useState(''); // + butonu başarı mesajı
+
+  // Global indirme state (sayfa değişince kaybolmaz)
+  const gDlProgress    = useStore(s => s.gDlProgress);
+  const setGDlProgress = useStore(s => s.setGDlProgress);
+  const setGDlCancelling = useStore(s => s.setGDlCancelling);
+  // Local alias for display inside this page
+  const hfDlProgress = gDlProgress;
 
   const refreshSys = async () => {
     setLoadingSys(true);
@@ -33,10 +44,22 @@ function SystemPage() {
   };
 
   const scanModels = async () => {
-    if (!modelsDir) return;
+    if (!modelsDir.trim()) { setScanError('Lütfen önce bir klasör yolu girin.'); return; }
+    setScanError('');
     localStorage.setItem('dissect_models_dir', modelsDir);
-    try { setModels(await invoke('list_models', { dir: modelsDir })); }
-    catch (e) { console.error(e); }
+    try {
+      const result = await invoke('list_models', { dir: modelsDir });
+      setModels(result || []);
+      if (!result || result.length === 0) setScanError('Bu klasörde .gguf dosyası bulunamadı.');
+    } catch (e) { setScanError(String(e)); setModels([]); }
+  };
+
+  const toggleHfExpand = (mid) => {
+    setHfExpanded(prev => {
+      const next = new Set(prev);
+      if (next.has(mid)) next.delete(mid); else next.add(mid);
+      return next;
+    });
   };
 
   const searchHfGguf = async () => {
@@ -48,6 +71,44 @@ function SystemPage() {
       if (!Array.isArray(results) || results.length === 0) setHfError('Sonuç bulunamadı. Farklı bir arama terimi deneyin.');
     } catch (e) { setHfError(String(e)); }
     finally { setHfSearching(false); }
+  };
+
+  const startHfDownload = async () => {
+    if (!confirmDl || !modelsDir) return;
+    const { url, name } = confirmDl;
+    const dest = `${modelsDir}\\${name}`;
+    setConfirmDl(null);
+    setGDlProgress({ name, pct: 0, mb: 0, total_mb: 0, speed_mbs: 0, eta_secs: 0, dest });
+    setGDlCancelling(false);
+    setDlError('');
+    // Guard: ignore dl-progress events while cancel is in-flight (prevents bar re-appearing)
+    const unlisten = await listen('dl-progress', (e) => {
+      if (useStore.getState().gDlCancelling) return;
+      setGDlProgress({ name, dest, ...e.payload });
+    });
+    const unlistenCancel = await listen('dl-cancelled', () => {
+      setGDlProgress(null);
+      setGDlCancelling(false);
+      unlisten();
+      unlistenCancel();
+    });
+    try {
+      await invoke('download_model', { url, dest });
+      await scanModels();
+    } catch (e) {
+      if (!String(e).includes('İptal edildi')) setDlError(String(e));
+    } finally {
+      setGDlProgress(null);
+      setGDlCancelling(false);
+      unlisten();
+      unlistenCancel();
+    }
+  };
+
+  const cancelDownload = async () => {
+    setGDlCancelling(true);          // immediately stop progress updates
+    try { await invoke('cancel_download'); } catch {}
+    // gDlProgress will be cleared by dl-cancelled event or the finally block above
   };
 
   const startDownload = async () => {
@@ -72,6 +133,26 @@ function SystemPage() {
   };
 
   useEffect(() => { refreshSys(); checkCuda(); }, []);
+
+  const UNCENSORED_KEYWORDS = ['uncensored', 'abliterated', 'unfiltered', 'no-censor', 'aggressive'];
+  const isUncensored = (id) => {
+    const lower = (id || '').toLowerCase();
+    return UNCENSORED_KEYWORDS.some(k => lower.includes(k));
+  };
+
+  const dedupedResults = useMemo(() => {
+    if (!hfResults.length) return [];
+    const grouped = {};
+    hfResults.forEach(m => {
+      const mid = m.id || m.modelId || '';
+      // Base name: extract repo base (before quantization suffixes)
+      const baseName = mid.replace(/-GGUF$/i, '').replace(/-gguf$/i, '');
+      if (!grouped[baseName] || (m.downloads || 0) > (grouped[baseName].downloads || 0)) {
+        grouped[baseName] = m;
+      }
+    });
+    return Object.values(grouped).sort((a, b) => (b.downloads || 0) - (a.downloads || 0));
+  }, [hfResults]);
 
   return (
     <div style={{ flex: 1, overflowY: 'auto', padding: 24 }}>
@@ -153,8 +234,28 @@ function SystemPage() {
           </div>
           <div style={{ display: 'flex', gap: 8, marginBottom: 16 }}>
             <input value={modelsDir} onChange={e => setModelsDir(e.target.value)} placeholder="C:\Users\you\models" style={{ flex: 1, background: 'rgba(0,0,0,0.3)', border: '1px solid rgba(255,255,255,0.08)', borderRadius: 7, padding: '7px 11px', fontSize: 12, color: '#e2e8f0', outline: 'none', fontFamily: 'monospace' }} />
-            <button onClick={scanModels} style={{ padding: '7px 14px', borderRadius: 7, border: '1px solid rgba(99,102,241,0.25)', background: 'rgba(99,102,241,0.08)', color: '#818cf8', cursor: 'pointer', fontSize: 12, fontWeight: 500, display: 'flex', alignItems: 'center', gap: 6 }}><FolderOpen size={14} /> Scan</button>
-          </div>
+            <button onClick={scanModels} style={{ padding: '7px 14px', borderRadius: 7, border: '1px solid rgba(99,102,241,0.25)', background: 'rgba(99,102,241,0.08)', color: '#818cf8', cursor: 'pointer', fontSize: 12, fontWeight: 500, display: 'flex', alignItems: 'center', gap: 6 }}><FolderOpen size={14} /> Scan</button>            <button
+              title="Masaüstünde Dissect_GGUF klasörü oluştur — indirdiğin GGUF'lar buraya kaydedilir"
+              onClick={async () => {
+                try {
+                  const dir = await invoke('setup_models_dir');
+                  setModelsDir(dir);
+                  localStorage.setItem('dissect_models_dir', dir);
+                  setScanError('');
+                  setFolderReady(dir);
+                  setTimeout(() => setFolderReady(''), 4000);
+                } catch (e) { setScanError(String(e)); }
+              }}
+              style={{ padding: '7px 14px', borderRadius: 7, border: '1px solid rgba(34,197,94,0.3)', background: 'rgba(34,197,94,0.08)', color: '#4ade80', cursor: 'pointer', fontSize: 18, fontWeight: 700, display: 'flex', alignItems: 'center', justifyContent: 'center', lineHeight: 1 }}
+            >+</button>          </div>
+          {folderReady && (
+            <div style={{ fontSize: 11, color: '#4ade80', marginBottom: 8, padding: '8px 12px', borderRadius: 6, background: 'rgba(34,197,94,0.06)', border: '1px solid rgba(34,197,94,0.2)', display: 'flex', alignItems: 'center', gap: 6 }}>
+              <CheckCircle2 size={13} />
+              <span><strong>Klasör hazır:</strong> <span style={{ fontFamily: 'monospace', color: '#e2e8f0' }}>{folderReady}</span></span>
+              <span style={{ marginLeft: 4, color: '#64748b' }}>— HF’den inen GGUF’lar buraya kaydedilir. Sonra <strong style={{color:'#818cf8'}}>Scan</strong> ile yükle.</span>
+            </div>
+          )}
+          {scanError && <div style={{ fontSize: 11, color: '#f87171', marginBottom: 8, padding: '6px 10px', borderRadius: 6, background: 'rgba(248,113,113,0.06)', border: '1px solid rgba(248,113,113,0.12)', display: 'flex', alignItems: 'center', gap: 6 }}><AlertCircle size={13} /> {scanError}</div>}
 
           {models.length > 0 && (
             <div style={{ marginBottom: 16 }}>
@@ -172,68 +273,171 @@ function SystemPage() {
           )}
 
           {/* HuggingFace GGUF Arama */}
-          <div style={{ marginBottom: 16, borderRadius: 10, background: 'rgba(251,191,36,0.04)', border: '1px solid rgba(251,191,36,0.15)', padding: '12px 14px' }}>
-            <div style={{ fontSize: 10, fontWeight: 700, color: '#fbbf24', textTransform: 'uppercase', letterSpacing: '0.07em', marginBottom: 10 }}>🔍 HuggingFace GGUF Arama</div>
-            <div style={{ display: 'flex', gap: 8, marginBottom: 10 }}>
-              <input value={hfQuery} onChange={e => setHfQuery(e.target.value)}
-                onKeyDown={e => e.key === 'Enter' && searchHfGguf()}
-                 placeholder="Örn: qwen2.5, llama-3, mistral-7b, phi-3&"
-                style={{ flex: 1, background: 'rgba(0,0,0,0.3)', border: '1px solid rgba(251,191,36,0.2)', borderRadius: 7, padding: '7px 11px', fontSize: 12, color: '#e2e8f0', outline: 'none', fontFamily: 'monospace' }} />
+          <div style={{ marginBottom: 16, borderRadius: 12, background: 'linear-gradient(135deg, rgba(99,102,241,0.06) 0%, rgba(168,85,247,0.06) 100%)', border: '1px solid rgba(99,102,241,0.15)', padding: '16px 18px', position: 'relative', overflow: 'hidden' }}>
+            {/* Decorative glow */}
+            <div style={{ position: 'absolute', top: -30, right: -30, width: 80, height: 80, borderRadius: '50%', background: 'radial-gradient(circle, rgba(99,102,241,0.15) 0%, transparent 70%)', pointerEvents: 'none' }} />
+
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 14 }}>
+              <div style={{ width: 28, height: 28, borderRadius: 8, background: 'linear-gradient(135deg, #6366f1 0%, #a855f7 100%)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+                <Search size={14} color="#fff" />
+              </div>
+              <div>
+                <div style={{ fontSize: 13, fontWeight: 700, color: '#e2e8f0', letterSpacing: '-0.01em' }}>HuggingFace GGUF Arama</div>
+                <div style={{ fontSize: 9, color: '#64748b' }}>Binlerce GGUF modeli arasında arayın ve doğrudan indirin</div>
+              </div>
+            </div>
+
+            <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
+              <div style={{ flex: 1, position: 'relative' }}>
+                <Search size={13} color="#64748b" style={{ position: 'absolute', left: 10, top: '50%', transform: 'translateY(-50%)', pointerEvents: 'none' }} />
+                <input value={hfQuery} onChange={e => setHfQuery(e.target.value)}
+                  onKeyDown={e => e.key === 'Enter' && searchHfGguf()}
+                  placeholder="qwen2.5, llama-3, mistral-7b, phi-3..."
+                  style={{ width: '100%', boxSizing: 'border-box', paddingLeft: 32, background: 'rgba(0,0,0,0.35)', border: '1px solid rgba(99,102,241,0.2)', borderRadius: 8, padding: '9px 12px 9px 32px', fontSize: 12, color: '#e2e8f0', outline: 'none', fontFamily: 'monospace', transition: 'border 0.2s' }} />
+              </div>
               <button onClick={searchHfGguf} disabled={hfSearching || !hfQuery.trim()}
-                style={{ padding: '7px 16px', borderRadius: 7, border: '1px solid rgba(251,191,36,0.3)', background: 'rgba(251,191,36,0.08)', color: '#fbbf24', cursor: hfSearching ? 'wait' : 'pointer', fontSize: 12, fontWeight: 500, display: 'flex', alignItems: 'center', gap: 6, whiteSpace: 'nowrap' }}>
-                {hfSearching ? <><RefreshCw size={13} style={{ animation: '_sp 0.75s linear infinite' }} /> Aranıyor⬦</> : '🔍 Ara'}
+                style={{ padding: '9px 20px', borderRadius: 8, border: 'none', background: hfSearching ? 'rgba(99,102,241,0.15)' : 'linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%)', color: '#fff', cursor: hfSearching ? 'wait' : 'pointer', fontSize: 12, fontWeight: 600, display: 'flex', alignItems: 'center', gap: 6, whiteSpace: 'nowrap', boxShadow: '0 2px 8px rgba(99,102,241,0.25)', transition: 'all 0.2s' }}>
+                {hfSearching ? <><RefreshCw size={13} style={{ animation: '_sp 0.75s linear infinite' }} /> Aranıyor...</> : <><Search size={13} /> Ara</>}
               </button>
             </div>
-            {hfError && <div style={{ fontSize: 11, color: '#f87171', marginBottom: 8 }}>{hfError}</div>}
-            {hfResults.length > 0 && (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 6, maxHeight: 340, overflowY: 'auto' }}>
-                {hfResults.map((m) => {
+            {hfError && <div style={{ fontSize: 11, color: '#f87171', marginBottom: 8, padding: '6px 10px', borderRadius: 6, background: 'rgba(248,113,113,0.06)', border: '1px solid rgba(248,113,113,0.12)' }}>{hfError}</div>}
+
+            {/* Confirmation Dialog */}
+            {confirmDl && (
+              <div style={{ position: 'fixed', inset: 0, zIndex: 9999, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(0,0,0,0.6)', backdropFilter: 'blur(4px)' }}
+                onClick={() => setConfirmDl(null)}>
+                <div onClick={e => e.stopPropagation()} style={{ width: 420, background: '#1a1b2e', borderRadius: 14, border: '1px solid rgba(99,102,241,0.2)', boxShadow: '0 20px 60px rgba(0,0,0,0.5)', padding: '24px 28px', animation: 'fadeIn 0.2s' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 16 }}>
+                    <div style={{ width: 36, height: 36, borderRadius: 10, background: 'linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                      <Download size={18} color="#fff" />
+                    </div>
+                    <div>
+                      <div style={{ fontSize: 14, fontWeight: 700, color: '#e2e8f0' }}>Model İndir</div>
+                      <div style={{ fontSize: 10, color: '#64748b' }}>İndirme onayı</div>
+                    </div>
+                  </div>
+                  <div style={{ marginBottom: 18, padding: '12px 14px', borderRadius: 8, background: 'rgba(0,0,0,0.3)', border: '1px solid rgba(255,255,255,0.06)' }}>
+                    <div style={{ fontSize: 10, color: '#64748b', marginBottom: 4, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Model</div>
+                    <div style={{ fontSize: 12, fontWeight: 600, color: '#a78bfa', marginBottom: 8 }}>{confirmDl.model}</div>
+                    <div style={{ fontSize: 10, color: '#64748b', marginBottom: 4, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Dosya</div>
+                    <div style={{ fontSize: 11, fontFamily: 'monospace', color: '#e2e8f0', wordBreak: 'break-all' }}>{confirmDl.name}</div>
+                  </div>
+                  <div style={{ marginBottom: 16, padding: '8px 12px', borderRadius: 6, background: 'rgba(251,191,36,0.06)', border: '1px solid rgba(251,191,36,0.15)', fontSize: 10, color: '#fbbf24' }}>
+                    ⚠ Hedef: <span style={{ fontFamily: 'monospace', color: '#e2e8f0' }}>{modelsDir || '(Klasör seçilmedi)'}</span>
+                    {!modelsDir && <span style={{ display: 'block', marginTop: 4, color: '#f87171' }}>Önce yukarıdan bir models klasörü belirleyin!</span>}
+                  </div>
+                  <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
+                    <button onClick={() => setConfirmDl(null)}
+                      style={{ padding: '8px 18px', borderRadius: 8, border: '1px solid rgba(255,255,255,0.08)', background: 'transparent', color: '#8b949e', cursor: 'pointer', fontSize: 12, fontWeight: 500 }}>
+                      İptal
+                    </button>
+                    <button onClick={startHfDownload} disabled={!modelsDir}
+                      style={{ padding: '8px 22px', borderRadius: 8, border: 'none', background: modelsDir ? 'linear-gradient(135deg, #22c55e 0%, #16a34a 100%)' : '#374151', color: '#fff', cursor: modelsDir ? 'pointer' : 'not-allowed', fontSize: 12, fontWeight: 600, boxShadow: modelsDir ? '0 2px 10px rgba(34,197,94,0.3)' : 'none', display: 'flex', alignItems: 'center', gap: 6 }}>
+                      <Download size={14} /> İndir
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Active HF Download Progress */}
+            {hfDlProgress && (
+              <div style={{ marginBottom: 12, padding: '12px 14px', borderRadius: 10, background: 'rgba(34,197,94,0.04)', border: '1px solid rgba(34,197,94,0.15)' }}>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0, flex: 1 }}>
+                    <Download size={13} color="#22c55e" style={{ animation: '_sp 2s linear infinite', flexShrink: 0 }} />
+                    <span style={{ fontSize: 11, fontWeight: 600, color: '#e2e8f0', fontFamily: 'monospace', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{hfDlProgress.name}</span>
+                  </div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0, marginLeft: 8 }}>
+                    <span style={{ fontSize: 11, fontWeight: 700, color: '#22c55e', fontFamily: 'monospace' }}>{hfDlProgress.pct}%</span>
+                    <button onClick={cancelDownload}
+                      title="İndirmeyi iptal et"
+                      style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', width: 22, height: 22, borderRadius: 5, border: '1px solid rgba(239,68,68,0.35)', background: 'rgba(239,68,68,0.1)', color: '#f87171', cursor: 'pointer', padding: 0 }}>
+                      <X size={12} />
+                    </button>
+                  </div>
+                </div>
+                <div style={{ height: 8, borderRadius: 4, background: 'rgba(255,255,255,0.06)', overflow: 'hidden', position: 'relative' }}>
+                  <div style={{
+                    height: '100%', borderRadius: 4, transition: 'width 0.4s ease',
+                    width: `${hfDlProgress.pct}%`,
+                    background: `linear-gradient(90deg, #6366f1 0%, #8b5cf6 ${Math.min(50, hfDlProgress.pct)}%, #22c55e ${Math.max(80, hfDlProgress.pct)}%, #4ade80 100%)`,
+                    boxShadow: '0 0 12px rgba(99,102,241,0.4)',
+                  }} />
+                </div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 5 }}>
+                  <span style={{ fontSize: 9, color: '#64748b', fontFamily: 'monospace' }}>{hfDlProgress.mb.toFixed(1)} MB indirildi</span>
+                  <span style={{ fontSize: 9, color: '#64748b', fontFamily: 'monospace' }}>{hfDlProgress.total_mb.toFixed(1)} MB toplam</span>
+                </div>
+              </div>
+            )}
+
+            {dedupedResults.length > 0 && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8, maxHeight: 500, overflowY: 'auto', paddingRight: 4 }}>
+                {dedupedResults.map((m) => {
                   const mid = m.id || m.modelId || '';
-                  const isExp = hfExpanded === mid;
                   const ggufFiles = (m.siblings || []).filter(s => s.rfilename?.endsWith('.gguf'));
+                  const uncensored = isUncensored(mid);
                   return (
-                    <div key={mid} style={{ borderRadius: 8, background: 'rgba(99,102,241,0.04)', border: '1px solid rgba(99,102,241,0.12)', overflow: 'hidden' }}>
-                      <div style={{ padding: '9px 12px', display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer' }}
-                        onClick={() => setHfExpanded(isExp ? null : mid)}>
+                    <div key={mid} style={{ borderRadius: 10, background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.06)', overflow: 'hidden' }}>
+                      {/* Header - clickable to expand */}
+                      <div onClick={() => toggleHfExpand(mid)} style={{ padding: '12px 14px', display: 'flex', alignItems: 'flex-start', gap: 12, cursor: 'pointer', transition: 'background 0.15s' }}
+                        onMouseOver={e => e.currentTarget.style.background = 'rgba(255,255,255,0.03)'}
+                        onMouseOut={e => e.currentTarget.style.background = 'transparent'}>
+                        <div style={{ width: 34, height: 34, borderRadius: 8, background: uncensored ? 'linear-gradient(135deg, rgba(239,68,68,0.2) 0%, rgba(251,146,60,0.2) 100%)' : 'linear-gradient(135deg, rgba(99,102,241,0.15) 0%, rgba(168,85,247,0.15) 100%)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+                          <Layers size={16} color={uncensored ? '#fb923c' : '#818cf8'} />
+                        </div>
                         <div style={{ flex: 1, minWidth: 0 }}>
-                          <div style={{ fontSize: 12, fontWeight: 600, color: '#e2e8f0', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{mid}</div>
-                          <div style={{ fontSize: 10, color: '#64748b', marginTop: 1, display: 'flex', gap: 10 }}>
-                            <span>👍 {m.likes || 0}</span>
-                            <span>? {(m.downloads || 0).toLocaleString()}</span>
-                            {(m.tags || []).filter(t => t.startsWith('base_model')).slice(0,1).map(t => <span key={t} style={{ color: '#818cf8' }}>{t.replace('base_model:transform:','').replace('base_model:','')}</span>)}
+                          <div style={{ fontSize: 12, fontWeight: 600, color: '#e2e8f0', wordBreak: 'break-word', overflowWrap: 'anywhere', lineHeight: 1.5, marginBottom: 4 }}>
+                            {mid}
+                            {uncensored && <span style={{ marginLeft: 6, fontSize: 9, padding: '1px 7px', borderRadius: 4, background: 'rgba(239,68,68,0.15)', color: '#f87171', fontWeight: 700, border: '1px solid rgba(239,68,68,0.2)', whiteSpace: 'nowrap', verticalAlign: 'middle' }}>🔓 Sansürsüz</span>}
+                          </div>
+                          <div style={{ fontSize: 10, color: '#94a3b8', marginTop: 2, display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                            <span style={{ display: 'flex', alignItems: 'center', gap: 3 }}>❤️ <span style={{ color: '#e2e8f0', fontWeight: 600 }}>{m.likes || 0}</span></span>
+                            <span style={{ display: 'flex', alignItems: 'center', gap: 3 }}>⬇ <span style={{ color: '#e2e8f0', fontWeight: 600 }}>{(m.downloads || 0).toLocaleString()}</span></span>
+                            <span style={{ fontSize: 9, padding: '2px 7px', borderRadius: 4, background: 'rgba(99,102,241,0.12)', color: '#a78bfa', fontWeight: 600 }}>{ggufFiles.length} GGUF</span>
+                            {(m.tags || []).filter(t => t.startsWith('base_model')).slice(0,1).map(t => <span key={t} style={{ fontSize: 9, padding: '2px 7px', borderRadius: 4, background: 'rgba(168,85,247,0.1)', color: '#c084fc' }}>{t.replace('base_model:transform:','').replace('base_model:','')}</span>)}
                           </div>
                         </div>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
-                          <a href={`https://huggingface.co/${mid}`} target="_blank" rel="noreferrer"
-                            onClick={e => e.stopPropagation()}
-                            style={{ fontSize: 10, padding: '3px 9px', borderRadius: 5, border: '1px solid rgba(99,102,241,0.3)', background: 'rgba(99,102,241,0.08)', color: '#818cf8', textDecoration: 'none' }}>
-                            HF ↓
-                          </a>
-                          <span style={{ fontSize: 11, color: isExp ? '#818cf8' : '#4b5563' }}>{isExp ? '📂' : '📁'}</span>
+                        <a href={`https://huggingface.co/${mid}`} target="_blank" rel="noreferrer"
+                          onClick={e => e.stopPropagation()}
+                          style={{ fontSize: 10, padding: '5px 12px', borderRadius: 6, border: '1px solid rgba(99,102,241,0.2)', background: 'rgba(99,102,241,0.06)', color: '#818cf8', textDecoration: 'none', display: 'flex', alignItems: 'center', gap: 4, flexShrink: 0 }}>
+                          🤗 HF
+                        </a>
+                        <div style={{ flexShrink: 0, display: 'flex', alignItems: 'center', transition: 'transform 0.2s', transform: hfExpanded.has(mid) ? 'rotate(90deg)' : 'rotate(0deg)' }}>
+                          <ChevronRight size={16} color="#64748b" />
                         </div>
                       </div>
-                      {isExp && (
-                        <div style={{ borderTop: '1px solid rgba(255,255,255,0.05)', padding: '8px 12px 10px' }}>
-                          {ggufFiles.length === 0 ? (
-                            <div style={{ fontSize: 11, color: '#4b5563' }}>Bu model i?in GGUF dosyası listelenmemiş. HuggingFace sayfasından manuel indirin.</div>
-                          ) : (
-                            <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
-                              <div style={{ fontSize: 10, fontWeight: 600, color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 4 }}>GGUF Dosyaları ({ggufFiles.length})</div>
-                              {ggufFiles.map(f => {
-                                const dlLink = `https://huggingface.co/${mid}/resolve/main/${f.rfilename}`;
-                                return (
-                                  <div key={f.rfilename} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '5px 8px', borderRadius: 6, background: 'rgba(99,102,241,0.04)', border: '1px solid rgba(99,102,241,0.08)' }}>
-                                    <span style={{ flex: 1, fontSize: 11, fontFamily: 'monospace', color: '#94a3b8', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{f.rfilename}</span>
-                                    <button onClick={() => { setDlUrl(dlLink); setDlName(f.rfilename); }}
-                                      style={{ fontSize: 10, padding: '3px 9px', borderRadius: 5, border: '1px solid rgba(34,197,94,0.25)', background: 'rgba(34,197,94,0.07)', color: '#4ade80', cursor: 'pointer', whiteSpace: 'nowrap', flexShrink: 0 }}>
-                                      ↓ İndir
-                                    </button>
-                                  </div>
-                                );
-                              })}
-                            </div>
-                          )}
+                      {/* GGUF Files - shown when expanded */}
+                      {hfExpanded.has(mid) && ggufFiles.length > 0 && (
+                        <div style={{ borderTop: '1px solid rgba(255,255,255,0.04)', padding: '8px 14px 10px', maxHeight: 320, overflowY: 'auto' }}>
+                          {ggufFiles.map(f => {
+                            const dlLink = `https://huggingface.co/${mid}/resolve/main/${f.rfilename}`;
+                            const isDownloading = hfDlProgress?.name === f.rfilename;
+                            return (
+                              <div key={f.rfilename} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 10px', borderRadius: 7, background: isDownloading ? 'rgba(34,197,94,0.06)' : 'rgba(0,0,0,0.15)', border: `1px solid ${isDownloading ? 'rgba(34,197,94,0.15)' : 'rgba(255,255,255,0.03)'}`, marginBottom: 4 }}>
+                                <Layers size={11} color="#64748b" style={{ flexShrink: 0 }} />
+                                <a href={dlLink} target="_blank" rel="noreferrer"
+                                  onClick={e => e.stopPropagation()}
+                                  style={{ flex: 1, fontSize: 11, fontFamily: 'monospace', color: '#94a3b8', wordBreak: 'break-all', lineHeight: 1.4, textDecoration: 'none' }}
+                                  onMouseOver={e => e.currentTarget.style.color = '#818cf8'}
+                                  onMouseOut={e => e.currentTarget.style.color = '#94a3b8'}>
+                                  {f.rfilename}
+                                </a>
+                                {f.size != null && <span style={{ fontSize: 9, color: '#64748b', fontFamily: 'monospace', flexShrink: 0, background: 'rgba(255,255,255,0.04)', padding: '2px 6px', borderRadius: 4 }}>{(f.size / (1024*1024*1024)).toFixed(2)} GB</span>}
+                                <button
+                                  onClick={e => { e.stopPropagation(); setConfirmDl({ url: dlLink, name: f.rfilename, model: mid }); }}
+                                  disabled={!!hfDlProgress}
+                                  style={{ fontSize: 10, padding: '4px 12px', borderRadius: 6, border: 'none', background: hfDlProgress ? '#1e293b' : 'linear-gradient(135deg, #22c55e 0%, #16a34a 100%)', color: hfDlProgress ? '#475569' : '#fff', cursor: hfDlProgress ? 'not-allowed' : 'pointer', whiteSpace: 'nowrap', flexShrink: 0, fontWeight: 600, boxShadow: hfDlProgress ? 'none' : '0 1px 6px rgba(34,197,94,0.2)', display: 'flex', alignItems: 'center', gap: 4 }}>
+                                  <Download size={11} /> İndir
+                                </button>
+                              </div>
+                            );
+                          })}
                         </div>
+                      )}
+                      {hfExpanded.has(mid) && ggufFiles.length === 0 && (
+                        <div style={{ borderTop: '1px solid rgba(255,255,255,0.04)', padding: '8px 14px', fontSize: 11, color: '#475569', textAlign: 'center' }}>GGUF dosyası yok — <a href={`https://huggingface.co/${mid}`} target="_blank" rel="noreferrer" onClick={e => e.stopPropagation()} style={{ color: '#818cf8', textDecoration: 'none' }}>HF sayfasına git</a></div>
                       )}
                     </div>
                   );

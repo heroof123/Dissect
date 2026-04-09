@@ -25,6 +25,8 @@ sha1 = "0.10"
 capstone = "0.12"
 ureq = "2.10"
 rayon = "1.10"
+regex = "1"
+rusqlite = { version = "0.31", features = ["bundled"] }
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.58", features = [

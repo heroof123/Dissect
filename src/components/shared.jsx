@@ -1,5 +1,5 @@
 ﻿import React, { useState } from 'react';
-import { ChevronRight } from 'lucide-react';
+import { ChevronRight, ChevronDown } from 'lucide-react';
 
 function WinBtn({ onClick, danger, children }) {
   const [h, setH] = useState(false);
@@ -24,6 +24,24 @@ function NavItem({ active, onClick, icon, label, sub, badge }) {
       {badge && <span style={{ fontSize: 9, background: 'rgba(99,102,241,0.25)', color: '#818cf8', padding: '1px 5px', borderRadius: 4, fontWeight: 700 }}>{badge}</span>}
       {active && <ChevronRight size={12} color="#3d4451" />}
     </button>
+  );
+}
+
+function NavSection({ label, defaultOpen, hasActive, children }) {
+  const [open, setOpen] = useState(defaultOpen || hasActive || false);
+  const [h, setH] = useState(false);
+  return (
+    <div style={{ marginBottom: 2 }}>
+      <button onClick={() => setOpen(v => !v)} onMouseEnter={() => setH(true)} onMouseLeave={() => setH(false)}
+        style={{ width: '100%', border: 'none', cursor: 'pointer', borderRadius: 6, padding: '5px 12px', textAlign: 'left', display: 'flex', alignItems: 'center', gap: 6, background: h ? 'rgba(255,255,255,0.03)' : 'transparent', transition: 'background 0.13s' }}>
+        {open ? <ChevronDown size={10} color="#6e7681" /> : <ChevronRight size={10} color="#6e7681" />}
+        <span style={{ fontSize: 9, color: hasActive ? '#818cf8' : '#6e7681', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.08em' }}>{label}</span>
+        {!open && hasActive && <div style={{ width: 5, height: 5, borderRadius: '50%', background: '#6366f1', marginLeft: 'auto' }} />}
+      </button>
+      <div style={{ overflow: 'hidden', maxHeight: open ? 600 : 0, transition: 'max-height 0.2s ease', paddingLeft: 4 }}>
+        {children}
+      </div>
+    </div>
   );
 }
 
@@ -115,4 +133,4 @@ function MdText({ text }) {
 
 // —�—�—� Scanner Page —�—�—�—�—�—�—�—�—�—�—�—�—�—�—�—�—�—�—�—�—�—�—�—�—�—�—�—�—�—�—�—�—�—�—�—�—�—�—�—�—�—�—�—�—�—�—�—�—�—�—�—�—�
 
-export { WinBtn, NavItem, Card, CardHeader, Spinner, MdText };
+export { WinBtn, NavItem, NavSection, Card, CardHeader, Spinner, MdText };

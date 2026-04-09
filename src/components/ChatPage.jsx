@@ -145,6 +145,12 @@ function ChatPage({ chatContexts, setChatContexts, scanHistory }) {
   const [cloudApiKey, setCloudApiKey]     = useState(() => localStorage.getItem('dissect_cloud_key') || '');
   const [cloudModel, setCloudModel]       = useState(() => localStorage.getItem('dissect_cloud_model') || 'gpt-4o-mini');
   const [cloudConnected, setCloudConnected] = useState(false);
+  // Kaydedilmiş API anahtarını yükle (uygulama açılışında)
+  useEffect(() => {
+    invoke('load_api_key', { provider: cloudProvider }).then(key => {
+      if (key) { setCloudApiKey(key); localStorage.setItem('dissect_cloud_key', key); }
+    }).catch(() => {});
+  }, []);
   // —— Sohbet state ——
   const [messages, setMessages]           = useState([]);
   const [input, setInput]                 = useState('');
@@ -546,6 +552,8 @@ function ChatPage({ chatContexts, setChatContexts, scanHistory }) {
 
   // 2.7 — YARA Rule Wizard state and logic
   const [yaraWizardOpen, setYaraWizardOpen] = useState(false);
+  // D1 — Agent Pipeline
+  const [agentSteps, setAgentSteps] = useState([]); // [{name, status}]
   const [yaraRule, setYaraRule]       = useState('');
   const [yaraGenerating, setYaraGenerating] = useState(false);
   const [yaraRuleName, setYaraRuleName] = useState('custom_rule');
@@ -611,6 +619,48 @@ Output ONLY the YARA rule, no explanation.` },
     setStreaming(true);
     contentRef.current = '';
     setStreamContent('');
+
+    // ── D1: Agent mode — ai_agent_task'ı kullan ───────────────────────────
+    if (mode === 'agent') {
+      setAgentSteps([]);
+      // Dosya yolunu context'ten al
+      const fileCtx = chatContexts.find(c => c.type === 'file' || c.file_path || c.pe_path);
+      const fpStr = fileCtx?.file_path || fileCtx?.pe_path || filePath || '';
+      const unStep = await listen('agent-step', (e) => {
+        setAgentSteps(prev => {
+          const steps = [...prev];
+          const idx = steps.findIndex(s => s.name === e.payload.name);
+          if (idx >= 0) steps[idx] = e.payload;
+          else steps.push(e.payload);
+          return steps;
+        });
+      });
+      const unChunk = await listen('ai-chunk', (e) => {
+        contentRef.current += e.payload;
+        setStreamContent(contentRef.current);
+      });
+      const unDone = await listen('ai-done', () => {
+        setMessages(prev => [...prev, { role: 'assistant', content: contentRef.current }]);
+        setStreamContent('');
+        setStreaming(false);
+        unChunk(); unDone(); unStep();
+      });
+      try {
+        await invoke('ai_agent_task', {
+          filePath: fpStr,
+          task: userMsg.content,
+          model: activeModel || 'llama3',
+          baseUrl: activeUrl || 'http://localhost:11434',
+        });
+      } catch (e) {
+        setMessages(prev => [...prev, { role: 'assistant', content: `Ajan hatası: ${e}` }]);
+        setStreamContent('');
+        setStreaming(false);
+        unChunk(); unDone(); unStep();
+      }
+      return;
+    }
+    // ─────────────────────────────────────────────────────────────────────
 
     const unChunk = await listen('chat-chunk', (e) => {
       contentRef.current += e.payload;
@@ -872,6 +922,10 @@ Output ONLY the YARA rule, no explanation.` },
             <input value={cloudApiKey} onChange={e => { setCloudApiKey(e.target.value); localStorage.setItem('dissect_cloud_key', e.target.value); }}
               placeholder="API Key" type="password"
               style={{ flex: 1, minWidth: 180, background: 'rgba(0,0,0,0.3)', border: `1px solid ${cloudApiKey ? 'rgba(34,197,94,0.3)' : 'rgba(6,182,212,0.15)'}`, borderRadius: 7, padding: '6px 10px', fontSize: 11, color: '#e2e8f0', outline: 'none', fontFamily: 'monospace' }} />
+            <button onClick={() => invoke('save_api_key', { provider: cloudProvider, apiKey: cloudApiKey }).then(() => {}).catch(() => {})} title="API anahtarını kaydet"
+              style={{ padding: '6px 10px', borderRadius: 7, background: 'rgba(34,197,94,0.1)', border: '1px solid rgba(34,197,94,0.2)', color: '#22c55e', cursor: 'pointer', fontSize: 10 }}>
+              Kaydet
+            </button>
             <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
               <div style={{ width: 7, height: 7, borderRadius: '50%', background: cloudApiKey ? '#22c55e' : '#f59e0b' }} />
               <span style={{ fontSize: 11, color: cloudApiKey ? '#4ade80' : '#94a3b8' }}>{cloudApiKey ? 'Hazır' : 'API Key girin'}</span>
@@ -1189,6 +1243,20 @@ Output ONLY the YARA rule, no explanation.` },
               <Bot size={15} color="#a78bfa" />
             </div>
             <div style={{ maxWidth: '74%', padding: '10px 15px', borderRadius: '14px 14px 14px 4px', background: 'rgba(255,255,255,0.038)', border: '1px solid rgba(255,255,255,0.07)' }}>
+              {/* D1 Agent Steps */}
+              {mode === 'agent' && agentSteps.length > 0 && (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 4, marginBottom: 10 }}>
+                  {agentSteps.map((s, i) => (
+                    <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 10, color: s.status === 'done' ? '#22c55e' : s.status === 'error' ? '#ef4444' : s.status === 'streaming' ? '#a78bfa' : '#f59e0b' }}>
+                      <span style={{ width: 8, height: 8, borderRadius: '50%', background: 'currentColor', flexShrink: 0, animation: (s.status === 'running' || s.status === 'streaming') ? '_sp 0.8s linear infinite' : 'none' }} />
+                      <span>{s.name}</span>
+                      <span style={{ color: '#4b5563', fontStyle: 'italic' }}>
+                        {s.status === 'done' ? '✓' : s.status === 'error' ? '✗' : s.status === 'streaming' ? '✍ Yazıyor...' : '⟳'}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )}
               {streamContent
                 ? <><MdText text={streamContent} /><span style={{ display: 'inline-block', width: 2, height: 13, background: '#a78bfa', marginLeft: 2, verticalAlign: 'middle', animation: 'cursor-blink 1s steps(1) infinite' }} /></>
                 : <span style={{ fontSize: 13, color: '#374151' }}>Düşünüyor⬦<span style={{ display: 'inline-block', width: 2, height: 13, background: '#a78bfa', marginLeft: 2, verticalAlign: 'middle', animation: 'cursor-blink 1s steps(1) infinite' }} /></span>

@@ -1,12 +1,14 @@
 ﻿import React, { useState, useEffect, lazy, Suspense } from 'react';
+import { invoke } from '@tauri-apps/api/core';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import {
   Microscope, Minus, Maximize2, Square, X,
   ShieldAlert, Binary, Code, MessageSquare, Cpu, Layers,
   BarChart2, Monitor, Terminal, Play, Network, FileSearch,
+  Key, GitCompare, Activity, ShieldOff, FileText, Box, Database, Settings, Download,
 } from 'lucide-react';
 import { getHistory, getPluginCommands } from './utils/peHelpers';
-import { WinBtn, NavItem } from './components/shared';
+import { WinBtn, NavItem, NavSection } from './components/shared';
 import useStore, { VIEWS, THEMES, getAllThemes, addCustomTheme, removeCustomTheme } from './store/useStore';
 
 // Lazy-loaded page components
@@ -22,6 +24,15 @@ const DebuggerPage      = lazy(() => import('./components/DebuggerPage'));
 const EmulationPage     = lazy(() => import('./components/EmulationPage'));
 const NetworkCapturePage= lazy(() => import('./components/NetworkCapturePage'));
 const FlirtPage         = lazy(() => import('./components/FlirtPage'));
+const StringAnalysisPage= lazy(() => import('./components/StringAnalysisPage'));
+const BinDiffPage       = lazy(() => import('./components/BinDiffPage'));
+const ApiTracingPage    = lazy(() => import('./components/ApiTracingPage'));
+const AntiAnalysisPage  = lazy(() => import('./components/AntiAnalysisPage'));
+const ReportPage        = lazy(() => import('./components/ReportPage'));
+const SandboxPage       = lazy(() => import('./components/SandboxPage'));
+const KnowledgePage     = lazy(() => import('./components/KnowledgePage'));
+const PlatformPage      = lazy(() => import('./components/PlatformPage'));
+const SettingsPage      = lazy(() => import('./components/SettingsPage'));
 
 // Suspense fallback
 const PageLoader = () => (
@@ -52,6 +63,10 @@ export default function App() {
   const setCmdOpen = useStore(s => s.setCmdOpen);
   const cmdQuery = useStore(s => s.cmdQuery);
   const setCmdQuery = useStore(s => s.setCmdQuery);
+  const gDlProgress    = useStore(s => s.gDlProgress);
+  const setGDlProgress  = useStore(s => s.setGDlProgress);
+  const gDlCancelling   = useStore(s => s.gDlCancelling);
+  const setGDlCancelling = useStore(s => s.setGDlCancelling);
 
   const [isMaximized, setIsMaximized] = useState(false);
   const [sidebarDragging, setSidebarDragging] = useState(false);
@@ -170,23 +185,36 @@ export default function App() {
       <div style={{ display: 'flex', flex: 1, overflow: 'hidden' }}>
 
         {/* Sidebar */}
-        <aside style={{ width: sidebarWidth, flexShrink: 0, background: T.sidebar, borderRight: `1px solid ${T.border}`, display: 'flex', flexDirection: 'column', padding: '14px 8px', position: 'relative', userSelect: sidebarDragging ? 'none' : undefined }}>
-          <NavItem active={view === VIEWS.SCANNER} onClick={() => setView(VIEWS.SCANNER)} icon={<ShieldAlert size={15} />} label="Collector Layer"  sub="PE · Entropy · Strings · Imports" />
-          <NavItem active={view === VIEWS.PATCHER} onClick={() => setView(VIEWS.PATCHER)} icon={<Binary size={15} />}     label="Hex Patcher"     sub="Offsets · NOP injection" />
-          <NavItem active={view === VIEWS.DISASM}  onClick={() => setView(VIEWS.DISASM)}  icon={<Code size={15} />}       label="Disassembly"     sub="x86/x64 · Functions · XRef" badge="NEW" />
+        <aside style={{ width: sidebarWidth, flexShrink: 0, background: T.sidebar, borderRight: `1px solid ${T.border}`, display: 'flex', flexDirection: 'column', padding: '14px 8px', position: 'relative', userSelect: sidebarDragging ? 'none' : undefined, overflow: 'auto' }}>
+          <NavSection label="Analysis" defaultOpen hasActive={[VIEWS.SCANNER, VIEWS.PATCHER, VIEWS.DISASM].includes(view)}>
+            <NavItem active={view === VIEWS.SCANNER} onClick={() => setView(VIEWS.SCANNER)} icon={<ShieldAlert size={15} />} label="Collector Layer"  sub="PE · Entropy · Strings · Imports" />
+            <NavItem active={view === VIEWS.PATCHER} onClick={() => setView(VIEWS.PATCHER)} icon={<Binary size={15} />}     label="Hex Patcher"     sub="Offsets · NOP injection" />
+            <NavItem active={view === VIEWS.DISASM}  onClick={() => setView(VIEWS.DISASM)}  icon={<Code size={15} />}       label="Disassembly"     sub="x86/x64 · Functions · XRef" badge="NEW" />
+          </NavSection>
 
-          <NavItem active={view === VIEWS.CHAT}    onClick={() => setView(VIEWS.CHAT)}    icon={<MessageSquare size={15} />} label="AI Chat"       sub="Explain · Analyze · Guide · Hyp." badge="NEW" />
-          <NavItem active={view === VIEWS.SYSTEM}  onClick={() => setView(VIEWS.SYSTEM)}  icon={<Cpu size={15} />}        label="System & Models" sub="GPU · CUDA · Model manager" />
-          <NavItem active={view === VIEWS.PLUGINS} onClick={() => setView(VIEWS.PLUGINS)} icon={<Layers size={15} />}     label="Plugins"         sub="Mağaza · API · Sandbox" badge="v2" />
-          <NavItem active={view === VIEWS.DASHBOARD} onClick={() => setView(VIEWS.DASHBOARD)} icon={<BarChart2 size={15} />} label="Dashboard"       sub="İstatistik · Rapor · Proje" badge="NEW" />
+          <NavSection label="Intelligence" defaultOpen hasActive={[VIEWS.CHAT, VIEWS.SYSTEM, VIEWS.PLUGINS, VIEWS.DASHBOARD, VIEWS.REPORT].includes(view)}>
+            <NavItem active={view === VIEWS.CHAT}    onClick={() => setView(VIEWS.CHAT)}    icon={<MessageSquare size={15} />} label="AI Chat"       sub="Explain · Analyze · Guide · Hyp." badge="NEW" />
+            <NavItem active={view === VIEWS.SYSTEM}  onClick={() => setView(VIEWS.SYSTEM)}  icon={<Cpu size={15} />}        label="System & Models" sub="GPU · CUDA · Model manager" />
+            <NavItem active={view === VIEWS.PLUGINS} onClick={() => setView(VIEWS.PLUGINS)} icon={<Layers size={15} />}     label="Plugins"         sub="Mağaza · API · Sandbox" badge="v2" />
+            <NavItem active={view === VIEWS.DASHBOARD} onClick={() => setView(VIEWS.DASHBOARD)} icon={<BarChart2 size={15} />} label="Dashboard"       sub="İstatistik · Rapor · Proje" badge="NEW" />
+            <NavItem active={view === VIEWS.REPORT}     onClick={() => setView(VIEWS.REPORT)}     icon={<FileText size={15} />}   label="Rapor Üretimi"   sub="HTML · Özet · IOC · PDF" badge="D3" />
+            <NavItem active={view === VIEWS.KNOWLEDGE} onClick={() => setView(VIEWS.KNOWLEDGE)} icon={<Database size={15} />}  label="Bilgi Tabanı"    sub="RAG · MITRE · SQLite"   badge="D2" />
+            <NavItem active={view === VIEWS.PLATFORM}  onClick={() => setView(VIEWS.PLATFORM)}  icon={<Layers size={15} />}   label="Platform"        sub="ELF · APK · Batch · Script" badge="E" />
+            <NavItem active={view === VIEWS.SETTINGS}  onClick={() => setView(VIEWS.SETTINGS)}  icon={<Settings size={15} />} label="Ayarlar & UI"    sub="Tema · Layout · Hex Pro" badge="F" />
+          </NavSection>
 
-          <div style={{ height: 1, background: 'rgba(255,255,255,0.04)', margin: '8px 4px' }} />
-          <div style={{ fontSize: 9, color: '#6e7681', padding: '2px 12px', marginBottom: 2 }}>ADVANCED</div>
-          <NavItem active={view === VIEWS.ATTACH}    onClick={() => setView(VIEWS.ATTACH)}    icon={<Monitor size={15} />}      label="Process Attach"  sub="Bellek · Bölge · Okuma" badge="v6" />
-          <NavItem active={view === VIEWS.DEBUGGER}  onClick={() => setView(VIEWS.DEBUGGER)}  icon={<Terminal size={15} />}     label="Debugger"        sub="Step · Break · Register" badge="v6" />
-          <NavItem active={view === VIEWS.EMULATION} onClick={() => setView(VIEWS.EMULATION)} icon={<Play size={15} />}        label="Emulation"       sub="x86 Emülatör · Unicorn" badge="v6" />
-          <NavItem active={view === VIEWS.NETWORK}   onClick={() => setView(VIEWS.NETWORK)}   icon={<Network size={15} />}     label="Net Capture"     sub="DNS · HTTP · TLS · Beacon" badge="v6" />
-          <NavItem active={view === VIEWS.FLIRT}     onClick={() => setView(VIEWS.FLIRT)}     icon={<FileSearch size={15} />}  label="FLIRT Sigs"      sub="Kütüphane · İmza · IDA" badge="v6" />
+          <NavSection label="Advanced" hasActive={[VIEWS.ATTACH, VIEWS.DEBUGGER, VIEWS.EMULATION, VIEWS.NETWORK, VIEWS.FLIRT, VIEWS.STRINGS, VIEWS.BINDIFF, VIEWS.APITRACING, VIEWS.ANTIANALYSIS].includes(view)}>
+            <NavItem active={view === VIEWS.ATTACH}    onClick={() => setView(VIEWS.ATTACH)}    icon={<Monitor size={15} />}      label="Process Attach"  sub="Bellek · Bölge · Okuma" badge="v6" />
+            <NavItem active={view === VIEWS.DEBUGGER}  onClick={() => setView(VIEWS.DEBUGGER)}  icon={<Terminal size={15} />}     label="Debugger"        sub="Step · Break · Register" badge="v6" />
+            <NavItem active={view === VIEWS.EMULATION} onClick={() => setView(VIEWS.EMULATION)} icon={<Play size={15} />}        label="Emulation"       sub="x86 Emülatör · Unicorn" badge="v6" />
+            <NavItem active={view === VIEWS.NETWORK}   onClick={() => setView(VIEWS.NETWORK)}   icon={<Network size={15} />}     label="Net Capture"     sub="DNS · HTTP · TLS · Beacon" badge="v6" />
+            <NavItem active={view === VIEWS.FLIRT}     onClick={() => setView(VIEWS.FLIRT)}     icon={<FileSearch size={15} />}  label="FLIRT Sigs"      sub="Kütüphane · İmza · IDA" badge="v6" />
+            <NavItem active={view === VIEWS.STRINGS}   onClick={() => setView(VIEWS.STRINGS)}   icon={<Key size={15} />}         label="String Analizi"  sub="XOR · Base64 · Kod Çözme" badge="B3" />
+            <NavItem active={view === VIEWS.BINDIFF}   onClick={() => setView(VIEWS.BINDIFF)}   icon={<GitCompare size={15} />}  label="BinDiff"         sub="PE Fark · Import · Export" badge="B4" />
+            <NavItem active={view === VIEWS.APITRACING}   onClick={() => setView(VIEWS.APITRACING)}   icon={<Activity size={15} />}    label="API Tracing"     sub="IAT · Şüpheli API · Risk" badge="C1" />
+            <NavItem active={view === VIEWS.ANTIANALYSIS} onClick={() => setView(VIEWS.ANTIANALYSIS)} icon={<ShieldOff size={15} />}   label="Anti-Analysis"  sub="Debug · VM · Packer · Bypass" badge="C4" />
+            <NavItem active={view === VIEWS.SANDBOX} onClick={() => setView(VIEWS.SANDBOX)} icon={<Box size={15} />}   label="Sandbox"  sub="Kısıtlı çalıştırma · Davranış" badge="C2" />
+          </NavSection>
 
           <div style={{ flex: 1 }} />
           <div style={{ padding: '10px', borderRadius: 8, background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.04)' }}>
@@ -220,6 +248,15 @@ export default function App() {
           {view === VIEWS.EMULATION && <Suspense fallback={<PageLoader />}><EmulationPage /></Suspense>}
           {view === VIEWS.NETWORK   && <Suspense fallback={<PageLoader />}><NetworkCapturePage /></Suspense>}
           {view === VIEWS.FLIRT     && <Suspense fallback={<PageLoader />}><FlirtPage /></Suspense>}
+          {view === VIEWS.STRINGS   && <Suspense fallback={<PageLoader />}><StringAnalysisPage /></Suspense>}
+          {view === VIEWS.BINDIFF   && <Suspense fallback={<PageLoader />}><BinDiffPage /></Suspense>}
+          {view === VIEWS.APITRACING   && <Suspense fallback={<PageLoader />}><ApiTracingPage /></Suspense>}
+          {view === VIEWS.ANTIANALYSIS  && <Suspense fallback={<PageLoader />}><AntiAnalysisPage /></Suspense>}
+          {view === VIEWS.REPORT        && <Suspense fallback={<PageLoader />}><ReportPage /></Suspense>}
+          {view === VIEWS.SANDBOX       && <Suspense fallback={<PageLoader />}><SandboxPage   /></Suspense>}
+          {view === VIEWS.KNOWLEDGE     && <Suspense fallback={<PageLoader />}><KnowledgePage /></Suspense>}
+          {view === VIEWS.PLATFORM      && <Suspense fallback={<PageLoader />}><PlatformPage  /></Suspense>}
+          {view === VIEWS.SETTINGS      && <Suspense fallback={<PageLoader />}><SettingsPage  /></Suspense>}
         </main>
 
       </div>
@@ -366,6 +403,79 @@ export default function App() {
           </div>
         );
       })()}
+
+      {/* ── Global Download Progress Bar ── always visible regardless of page ── */}
+      {(gDlProgress || gDlCancelling) && (
+        <div style={{
+          position: 'fixed', bottom: 0, left: 0, right: 0, zIndex: 9990,
+          background: 'rgba(10,12,20,0.97)', borderTop: '1px solid rgba(34,197,94,0.25)',
+          padding: '8px 18px', display: 'flex', alignItems: 'center', gap: 12,
+          backdropFilter: 'blur(8px)', boxShadow: '0 -4px 24px rgba(0,0,0,0.5)'
+        }}>
+          <Download size={14} color={gDlCancelling ? '#f87171' : '#22c55e'}
+            style={{ animation: gDlCancelling ? 'none' : '_sp 2s linear infinite', flexShrink: 0 }} />
+          <div style={{ flex: 1, minWidth: 0 }}>
+            {/* Row 1: name + right stats */}
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
+              <span style={{ fontSize: 11, color: gDlCancelling ? '#f87171' : '#e2e8f0', fontFamily: 'monospace',
+                overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '50vw' }}>
+                {gDlCancelling ? 'İptal ediliyor...' : (gDlProgress?.name ?? '')}
+              </span>
+              {!gDlCancelling && gDlProgress && (
+                <span style={{ fontSize: 11, fontWeight: 700, color: '#22c55e', fontFamily: 'monospace',
+                  flexShrink: 0, marginLeft: 8, display: 'flex', gap: 6, alignItems: 'center' }}>
+                  <span>{gDlProgress.mb?.toFixed(1)} / {gDlProgress.total_mb?.toFixed(1)} MB</span>
+                  <span style={{ color: '#94a3b8' }}>·</span>
+                  <span>{gDlProgress.pct}%</span>
+                  {(gDlProgress.speed_mbs ?? 0) > 0.01 && (
+                    <>
+                      <span style={{ color: '#94a3b8' }}>·</span>
+                      <span style={{ color: '#38bdf8' }}>{gDlProgress.speed_mbs?.toFixed(2)} MB/s</span>
+                    </>
+                  )}
+                  {(gDlProgress.eta_secs ?? 0) > 0 && (
+                    <>
+                      <span style={{ color: '#94a3b8' }}>·</span>
+                      <span style={{ color: '#a78bfa' }}>
+                        {gDlProgress.eta_secs >= 60
+                          ? `~${Math.ceil(gDlProgress.eta_secs / 60)} dk`
+                          : `~${gDlProgress.eta_secs} sn`}
+                      </span>
+                    </>
+                  )}
+                </span>
+              )}
+            </div>
+            {/* Progress bar */}
+            <div style={{ height: 5, borderRadius: 3, background: 'rgba(255,255,255,0.06)', overflow: 'hidden' }}>
+              <div style={{
+                height: '100%', borderRadius: 3, transition: 'width 0.4s ease',
+                width: gDlCancelling ? '100%' : `${gDlProgress?.pct ?? 0}%`,
+                background: gDlCancelling
+                  ? 'rgba(239,68,68,0.4)'
+                  : 'linear-gradient(90deg, #6366f1, #8b5cf6, #22c55e)',
+                boxShadow: gDlCancelling ? 'none' : '0 0 8px rgba(99,102,241,0.4)',
+              }} />
+            </div>
+          </div>
+          {/* Cancel button — only before cancelling */}
+          {!gDlCancelling && (
+            <button
+              onClick={async () => {
+                setGDlCancelling(true);   // stop progress updates immediately
+                try { await invoke('cancel_download'); } catch {}
+              }}
+              title="İndirmeyi iptal et"
+              style={{ display: 'flex', alignItems: 'center', gap: 5, padding: '5px 12px',
+                borderRadius: 7, border: '1px solid rgba(239,68,68,0.35)',
+                background: 'rgba(239,68,68,0.08)', color: '#f87171',
+                cursor: 'pointer', fontSize: 11, fontWeight: 600, flexShrink: 0 }}
+            >
+              <X size={12} /> İptal
+            </button>
+          )}
+        </div>
+      )}
     </div>
   );
 }

@@ -6,6 +6,8 @@ export const VIEWS = {
   SYSTEM: 'system', CHAT: 'chat', PLUGINS: 'plugins',
   DASHBOARD: 'dashboard', ATTACH: 'attach', DEBUGGER: 'debugger',
   EMULATION: 'emulation', NETWORK: 'network', FLIRT: 'flirt',
+  STRINGS: 'strings', BINDIFF: 'bindiff', APITRACING: 'apitracing', ANTIANALYSIS: 'antianalysis', REPORT: 'report',
+  SANDBOX: 'sandbox', KNOWLEDGE: 'knowledge', PLATFORM: 'platform', SETTINGS: 'settings',
 };
 
 export const THEMES = {
@@ -107,6 +109,12 @@ const useStore = create(
       setCmdOpen: (v) => set({ cmdOpen: v }),
       cmdQuery: '',
       setCmdQuery: (q) => set({ cmdQuery: q }),
+
+      // — Global Download State (persists across pages) —
+      gDlProgress: null,       // { name, pct, mb, total_mb, dest, speed_mbs, eta_secs }
+      setGDlProgress: (p) => set({ gDlProgress: p }),
+      gDlCancelling: false,    // true while cancel is in-flight (blocks dl-progress updates)
+      setGDlCancelling: (v) => set({ gDlCancelling: v }),
     }),
     {
       name: 'dissect-store',

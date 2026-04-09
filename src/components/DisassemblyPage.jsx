@@ -7,6 +7,56 @@ import {
 } from 'lucide-react';
 import { CFGPanel } from './CfgComponents';
 
+function DisasmRow({ index, style, instructions, kindColor, jumpToTarget, handleInsRightClick, openXref, flirtMatches }) {
+  const i = index;
+  const ins = instructions[i];
+  const isBlockEnd = ins.kind === 'ret' || ins.kind === 'jmp';
+  const isCall = ins.kind === 'call';
+  const hasTarget = !!ins.target;
+  const flirt = flirtMatches && flirtMatches[ins.addr];
+  return (
+    <div style={{
+      ...style,
+      display: 'grid', gridTemplateColumns: '100px 60px 150px 75px 1fr', padding: '2px 12px', fontSize: 11, lineHeight: '20px',
+      background: isBlockEnd ? 'rgba(248,113,113,0.03)' : isCall ? 'rgba(96,165,250,0.03)' : i % 2 === 0 ? 'transparent' : 'rgba(255,255,255,0.008)',
+      borderBottom: isBlockEnd ? '2px solid rgba(248,113,113,0.15)' : undefined,
+      cursor: hasTarget ? 'pointer' : 'default',
+    }} onClick={() => hasTarget && jumpToTarget(ins.target_val)}
+       onContextMenu={(e) => handleInsRightClick(e, ins)}
+       onDoubleClick={() => openXref(ins.addr_val)}
+       title={hasTarget ? `Jump to ${ins.target} | Sağ tık: Patch | Çift tık: XRef` : 'Sağ tık: Patch | Çift tık: XRef'}>
+      <span style={{ color: '#4b5563', userSelect: 'text' }}>{ins.addr}</span>
+      <span style={{ color: '#1f2937', fontSize: 9, userSelect: 'text' }}>+{(ins.offset || 0).toString(16).toUpperCase()}</span>
+      <span style={{ color: '#374151', userSelect: 'text', fontSize: 10 }}>{ins.bytes}</span>
+      <span style={{ color: kindColor[ins.kind] || '#e2e8f0', fontWeight: 700, userSelect: 'text' }}>{ins.mnemonic}</span>
+      <span style={{ color: hasTarget ? '#818cf8' : '#94a3b8', userSelect: 'text', textDecoration: hasTarget ? 'underline' : 'none' }}>
+        {ins.operands}
+        {hasTarget && <span style={{ fontSize: 9, color: '#4b5563', marginLeft: 8 }}>→ {ins.target}</span>}
+        {flirt && (
+          <span style={{ marginLeft: 10, fontSize: 9, padding: '1px 5px', borderRadius: 3, background: 'rgba(96,165,250,0.12)', color: '#60a5fa', fontWeight: 600, border: '1px solid rgba(96,165,250,0.2)' }}
+            title={`FLIRT: ${flirt.lib} — ${flirt.category}`}>
+            ⚑ FLIRT:{flirt.name}
+          </span>
+        )}
+      </span>
+    </div>
+  );
+}
+
+function colorizePC(code) {
+  if (!code) return '';
+  return code
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/\b(void|int|int32_t|int16_t|uint8_t|uintptr_t|return|if|else|goto|while|for)\b/g,
+      '<span style="color:#22d3ee;font-weight:600">$1</span>')
+    .replace(/\b(rax|rbx|rcx|rdx|rsi|rdi|rsp|rbp|eax|ebx|ecx|edx|r8|r9|r10|r11|r12|r13|r14|r15)\b/g,
+      '<span style="color:#a78bfa">$1</span>')
+    .replace(/(\/\/[^\n]*)/g, '<span style="color:#4b5563;font-style:italic">$1</span>')
+    .replace(/\b(sub_[0-9a-fA-F]+|local_[0-9a-fA-F]+)\b/g,
+      '<span style="color:#fde68a">$1</span>')
+    .replace(/\b(0x[0-9a-fA-F]+)\b/g, '<span style="color:#86efac">$1</span>');
+}
+
 function DisassemblyPage({ filePath, onSendToChat }) {
   const [instructions, setInstructions] = useState([]);
   const [functions, setFunctions]       = useState([]);
@@ -30,6 +80,7 @@ function DisassemblyPage({ filePath, onSendToChat }) {
   const [xrefLoading, setXrefLoading]   = useState(false);
   const [ctxMenu, setCtxMenu]           = useState(null); // {x,y,ins} for right-click
   const [patchLog, setPatchLog]         = useState([]);
+  const [flirtMatches, setFlirtMatches] = useState({}); // addr_hex → {name, lib, category}
   const listRef = useRef(null);
   const dragRef = useRef(null);
 
@@ -226,6 +277,9 @@ function DisassemblyPage({ filePath, onSendToChat }) {
         case 'types':
           result = await invoke('recover_types', { hexBytes, arch, startAddr: addr });
           break;
+        case 'pseudo':
+          result = await invoke('pseudo_decompile', { hexBytes, arch, funcName: selectedFunc?.name || null });
+          break;
       }
       setAnalysisResult(result);
     } catch (e) {
@@ -242,6 +296,7 @@ function DisassemblyPage({ filePath, onSendToChat }) {
     { key: 'shellcode', label: 'Shellcode', icon: Bug, color: '#22c55e' },
     { key: 'diff', label: 'Diff', icon: Diff, color: '#3b82f6' },
     { key: 'types', label: 'Types', icon: Layers, color: '#ec4899' },
+    { key: 'pseudo', label: 'Pseudo-C', icon: Code, color: '#22d3ee' },
   ];
 
   if (!localFilePath) {
@@ -291,6 +346,20 @@ function DisassemblyPage({ filePath, onSendToChat }) {
           <button onClick={() => setAnalysisOpen(v => !v)}
             style={{ padding: '4px 10px', borderRadius: 6, border: '1px solid rgba(255,255,255,0.08)', background: analysisOpen ? 'rgba(245,158,11,0.12)' : 'transparent', color: analysisOpen ? '#f59e0b' : '#64748b', fontSize: 11, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 4 }}>
             <Activity size={12} /> Analysis
+          </button>
+          <button onClick={async () => {
+            if (!localFilePath) return;
+            try {
+              const result = await invoke('scan_flirt_signatures', { filePath: localFilePath });
+              const map = {};
+              for (const m of (result?.matches || [])) {
+                if (m.addr) map[m.addr] = m;
+              }
+              setFlirtMatches(map);
+              alert(`FLIRT: ${Object.keys(map).length} fonksiyon tanındı`);
+            } catch (e) { alert('FLIRT hata: ' + e); }
+          }} disabled={!localFilePath} style={{ padding: '4px 10px', borderRadius: 6, border: '1px solid rgba(96,165,250,0.2)', background: 'rgba(96,165,250,0.06)', color: localFilePath ? '#60a5fa' : '#1f2937', fontSize: 11, cursor: localFilePath ? 'pointer' : 'default', display: 'flex', alignItems: 'center', gap: 4 }}>
+            ⚑ FLIRT
           </button>
         </div>
       </div>
@@ -368,40 +437,13 @@ function DisassemblyPage({ filePath, onSendToChat }) {
             )}
             {instructions.length > 0 && (
               <VirtualList
-                height={600}
-                width="100%"
-                itemCount={instructions.length}
-                itemSize={24}
-                style={{ flex: 1 }}
-              >
-                {({ index: i, style: rowStyle }) => {
-                  const ins = instructions[i];
-                  const isBlockEnd = ins.kind === 'ret' || ins.kind === 'jmp';
-                  const isCall = ins.kind === 'call';
-                  const hasTarget = !!ins.target;
-                  return (
-                    <div key={i} style={{
-                      ...rowStyle,
-                      display: 'grid', gridTemplateColumns: '100px 60px 150px 75px 1fr', padding: '2px 12px', fontSize: 11, lineHeight: '20px',
-                      background: isBlockEnd ? 'rgba(248,113,113,0.03)' : isCall ? 'rgba(96,165,250,0.03)' : i % 2 === 0 ? 'transparent' : 'rgba(255,255,255,0.008)',
-                      borderBottom: isBlockEnd ? '2px solid rgba(248,113,113,0.15)' : undefined,
-                      cursor: hasTarget ? 'pointer' : 'default',
-                    }} onClick={() => hasTarget && jumpToTarget(ins.target_val)}
-                       onContextMenu={(e) => handleInsRightClick(e, ins)}
-                       onDoubleClick={() => openXref(ins.addr_val)}
-                       title={hasTarget ? `Jump to ${ins.target} | Sağ tık: Patch | Çift tık: XRef` : 'Sağ tık: Patch | Çift tık: XRef'}>
-                      <span style={{ color: '#4b5563', userSelect: 'text' }}>{ins.addr}</span>
-                      <span style={{ color: '#1f2937', fontSize: 9, userSelect: 'text' }}>+{(ins.offset || 0).toString(16).toUpperCase()}</span>
-                      <span style={{ color: '#374151', userSelect: 'text', fontSize: 10 }}>{ins.bytes}</span>
-                      <span style={{ color: kindColor[ins.kind] || '#e2e8f0', fontWeight: 700, userSelect: 'text' }}>{ins.mnemonic}</span>
-                      <span style={{ color: hasTarget ? '#818cf8' : '#94a3b8', userSelect: 'text', textDecoration: hasTarget ? 'underline' : 'none' }}>
-                        {ins.operands}
-                        {hasTarget && <span style={{ fontSize: 9, color: '#4b5563', marginLeft: 8 }}>→ {ins.target}</span>}
-                      </span>
-                    </div>
-                  );
-                }}
-              </VirtualList>
+                defaultHeight={600}
+                style={{ height: 600, width: '100%', flex: 1 }}
+                rowCount={instructions.length}
+                rowHeight={24}
+                rowComponent={DisasmRow}
+                rowProps={{ instructions, kindColor, jumpToTarget, handleInsRightClick, openXref, flirtMatches }}
+              />
             )}
           </div>
         </div>
@@ -722,6 +764,27 @@ function DisassemblyPage({ filePath, onSendToChat }) {
                     ))}
                   </div>
                 )}
+              </div>
+            )}
+
+            {/* Pseudo-C Decompiler */}
+            {analysisTab === 'pseudo' && analysisResult && !analysisResult.error && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                <div style={{ display: 'flex', gap: 16, fontSize: 10, color: '#9ca3af', flexWrap: 'wrap' }}>
+                  <span>Fonksiyon: <b style={{ color: '#22d3ee' }}>{analysisResult.func_name}</b></span>
+                  <span>Talimat: <b style={{ color: '#e2e8f0' }}>{analysisResult.instructions}</b></span>
+                  <span>Lokal değişken: <b style={{ color: '#f472b6' }}>{analysisResult.locals}</b></span>
+                  <span>Mimari: <b style={{ color: '#a78bfa' }}>{analysisResult.arch}</b></span>
+                </div>
+                <pre style={{
+                  background: 'rgba(0,0,0,0.4)', border: '1px solid rgba(34,211,238,0.15)',
+                  borderRadius: 6, padding: '10px 14px', fontSize: 11, lineHeight: 1.6,
+                  color: '#e2e8f0', overflowX: 'auto', overflowY: 'auto', maxHeight: 380,
+                  fontFamily: "'Consolas', 'Courier New', monospace", whiteSpace: 'pre',
+                  userSelect: 'text',
+                }}>
+                  <code dangerouslySetInnerHTML={{ __html: colorizePC(analysisResult.pseudo_c) }} />
+                </pre>
               </div>
             )}
           </div>
